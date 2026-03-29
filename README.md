@@ -14,6 +14,12 @@
 </p>
 
 <p align="center">
+	<a href="https://github.com/abhishek085/Nodemind/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg">
+		<img alt="Download Nodemind for macOS" src="https://img.shields.io/badge/Download-Nodemind%20for%20macOS-111111?style=for-the-badge&logo=apple&logoColor=white" />
+	</a>
+</p>
+
+<p align="center">
 	<img src="public/Nodemind_preview.gif" alt="Nodemind animated preview" width="960" />
 </p>
 
@@ -50,12 +56,12 @@ Before launching the app, make sure your machine already has:
 - a decent 8B model running for better performance
 
 <p align="center">
-	<a href="https://github.com/abhishek085/Zac_by_Nokast/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg">
-		<img alt="Download macOS DMG installer" src="https://img.shields.io/badge/Download-macOS%20DMG%20Installer-111111?style=for-the-badge&logo=apple&logoColor=white" />
+	<a href="https://github.com/abhishek085/Nodemind/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg">
+		<img alt="Download Nodemind for macOS" src="https://img.shields.io/badge/Download-Nodemind%20for%20macOS-111111?style=for-the-badge&logo=apple&logoColor=white" />
 	</a>
 </p>
 
-1. Download the installer: [Nodemind_0.1.0_aarch64.dmg](https://github.com/abhishek085/Zac_by_Nokast/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg)
+1. Download the installer: [Nodemind_0.1.0_aarch64.dmg](https://github.com/abhishek085/Nodemind/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg)
 2. Open the `.dmg` and move the app into your `Applications` folder.
 3. Before launching the app for the first time, run this command in Terminal because the app is currently unsigned:
 
@@ -64,8 +70,6 @@ sudo xattr -cr /Applications/zac_personal_assistant.app
 ```
 
 4. Open Nodemind from `Applications`.
-
-Note: the DMG link above works only after you create a GitHub Release for tag `v0.1.0` and upload `Nodemind_0.1.0_aarch64.dmg` as a release asset.
 
 ## What The App Does
 
