@@ -1,0 +1,451 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Nodemind Personal Assistant — Prompt Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Edit this file to customise how Nodemind's AI interprets and responds to speech.
+# After editing, recompile the app for changes to take effect.
+#
+# Placeholder syntax:  {variable_name}
+# Each prompt lists its available placeholders in the comment above it.
+#
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── Speech-to-Text (Whisper) ──────────────────────────────────────────────────
+# Used by the Whisper STT engine when the language is set to Hindi/Hinglish.
+# This string biases the transcription model toward producing English output
+# even when the spoken input mixes Hindi and English words.
+# No placeholders — edited as a plain string.
+[stt]
+hindi_initial_prompt = "This is a Hinglish conversation. Translate to English."
+
+
+# ── Command Parser ────────────────────────────────────────────────────────────
+# Triggered whenever you speak a direct command phrase.
+# The LLM parses your free-form speech into a structured JSON intent object
+# so the app can take the right action (create task, start meeting, etc.).
+#
+# Placeholders:
+#   {now}     — current date/time (e.g. "2026-03-25 14:30")
+#   {command} — the exact command words spoken by the user
+[parse_command]
+template = """
+You are a command parser for a personal assistant app called Nodemind.
+Current time: {now}
+
+The user spoke this command:
+"{command}"
+
+Return ONLY a valid JSON object. No markdown fences, no explanation, no extra text before or after the JSON.
+Schema:
+{
+  "intent": one of ["StartMeeting","EndMeeting","CreateTask","CreateReminder","CreateFocusSession","SetGoal","Summarize","Unknown"],
+  "title": "short title or null",
+  "person": "person name or null",
+  "project": "project name or null",
+  "due_hint": "natural language due date or null",
+  "duration_minutes": number or null,
+  "raw": "{command}"
+}
+"""
+
+
+# ── Ambient Chunk Annotator ───────────────────────────────────────────────────
+# Runs continuously in the background on each ~30-second block of ambient
+# speech captured while Nodemind is in listening mode (not a named command).
+# Extracts actionable tasks, topic/project tags, and mental fog signals from
+# your stream-of-consciousness narration.
+#
+# Fog signal values influence the "Fog View" patterns and daily suggestions.
+#
+# Placeholders:
+#   {text} — the raw transcribed speech chunk
+[annotate_chunk]
+template = """
+You are analyzing a chunk of ambient speech from a personal thinking assistant.
+The user was thinking out loud. Identify:
+- tasks: list of actionable items mentioned (title, project if clear, due_hint if any)
+- topics: main topics/projects mentioned
+- fog_signals: mental fog patterns like "overthinking", "context switching", "stuck", "distracted", "unclear"
+
+Speech chunk:
+"{text}"
+
+Return ONLY a valid JSON object. No markdown fences, no explanation, no extra text before or after the JSON.
+Schema:
+{
+  "tasks": [{"title": "...", "project": "...", "due_hint": "..."}],
+  "topics": ["..."],
+  "fog_signals": ["..."]
+}
+If nothing relevant, return: {"tasks":[],"topics":[],"fog_signals":[]}
+"""
+
+
+# ── Transcript Summarizer ─────────────────────────────────────────────────────
+# Called when you request a time-window summary, e.g. by saying
+# "summarize the last 30 minutes" or from the Today view.
+# Produces a short prose overview of what you were thinking and working on.
+#
+# Placeholders:
+#   {window_label} — human-readable label for the window (e.g. "last 30 minutes")
+#   {transcript}   — the raw concatenated transcript for that window
+[summarize_transcript]
+template = """
+You are summarizing what a person was thinking/working on during: {window_label}.
+Here is their stream-of-consciousness transcript:
+
+---
+{transcript}
+---
+
+Write a concise 3-5 sentence summary covering:
+1. Main topics they were thinking about
+2. Key decisions or ideas
+3. Any important tasks or goals mentioned
+
+Be factual and brief. No bullet points, just clean prose.
+"""
+
+
+# ── Meeting Summary / Minutes of Meeting ──────────────────────────────────────
+# Triggered automatically when you say "meeting over".
+# Generates structured meeting notes from everything recorded during the session.
+# Output is stored in the Meetings view and can be reviewed / exported.
+#
+# Placeholders:
+#   {person}     — name of the person you met with
+#   {topic}      — the meeting topic
+#   {transcript} — full transcript of the meeting
+[meeting_summary]
+template = """
+You are generating meeting notes for a meeting with {person} about {topic}.
+Full transcript:
+---
+{transcript}
+---
+
+Return ONLY a valid JSON object. No markdown fences, no explanation, no extra text before or after the JSON.
+Schema:
+{
+  "summary": "2-3 sentence summary",
+  "decisions": ["decision 1", "decision 2"],
+  "action_items": ["action 1", "action 2"],
+  "open_questions": ["question 1"]
+}
+"""
+
+
+# ── Daily Suggestions ─────────────────────────────────────────────────────────
+# Called from the Today view (and on wakeup) to generate prioritised action
+# suggestions and mental-fog interventions tailored to your current context.
+# Draws on your open tasks, active goals, and historical fog patterns.
+#
+# Placeholders:
+#   {tasks_json} — open tasks serialised as a JSON array
+#   {goals_json} — active goals serialised as a JSON array
+#   {fog_json}   — fog tag counts as a JSON object (e.g. {"stuck": 3, "distracted": 1})
+[daily_suggestions]
+template = """
+You are a personal thinking coach for the Nodemind assistant app.
+
+Current tasks (JSON): {tasks_json}
+Active goals (JSON): {goals_json}
+Mental fog patterns (tag: count): {fog_json}
+
+Generate 3-5 actionable suggestions to help the user make progress today.
+Also generate 2-3 mental fog insights based on the fog patterns.
+
+Return ONLY a valid JSON object. No markdown fences, no explanation, no extra text before or after the JSON.
+Schema:
+{
+  "suggestions": [
+    {"type":"task","text":"...","priority":"high|medium|low"},
+    ...
+  ],
+  "fog_insights": [
+    {"pattern":"...","insight":"...","intervention":"one tiny concrete action"},
+    ...
+  ]
+}
+"""
+
+
+# ── Signal Classifier (Intent Gatekeeper Stage 1) ────────────────────────────
+# Classifies transcribed chunks to reduce noise and hallucinations.
+# Returns one of: Noise, Observation, Command, CoreThought
+#
+# Placeholders:
+#   {text} — the raw transcribed speech chunk
+[signal_classifier]
+template = """
+You are a classifier for a personal thinking assistant. Categorize this transcribed speech into ONE of these categories:
+
+- "Noise": background sounds, filler words, incomplete mumbles (e.g., "um", "yeah okay", "hmm", "[unintelligible]")
+- "Observation": factual statements with no action or decision (e.g., "it's sunny today", "the meeting is at 2pm")
+- "Command": explicit instruction-like speech (e.g., "remind me to...", "schedule...", "create a task...")
+- "CoreThought": thinking or ideas that suggest potential tasks, goals, or decision points (e.g., "I should finish the report", "maybe I'll focus on the design")
+
+Speech: "{text}"
+
+Return ONLY a single word: Noise, Observation, Command, or CoreThought
+"""
+
+
+# ── Commitment Check (Intent Gatekeeper Stage 2) ──────────────────────────────
+# Validates whether a CoreThought contains enough substance to create a task.
+# Looks for action verb + subject; if missing, flags as a weak Suggestion.
+#
+# Placeholders:
+#   {text} — the raw transcribed speech chunk
+[commitment_check]
+template = """
+You are validating whether a speech chunk contains a genuine task commitment.
+
+A strong task must have:
+1. An ACTION VERB (do, build, fix, write, review, read, complete, finish, etc.)
+2. A SUBJECT (what thing is being acted upon)
+
+Examples:
+- "I need to finish the report" → STRONG (verb: finish, subject: report)
+- "The client is waiting" → WEAK (no clear action verb for the user)
+- "I should probably maybe look at the design" → WEAK (uncertain: "maybe", "probably", "should")
+- "I don't know how to start" → WEAK (only states problem, no action)
+
+Speech: "{text}"
+
+Return ONLY valid JSON object (no markdown, no extra text):
+{
+  "is_strong": true|false,
+  "action_verb": "verb or null",
+  "subject": "subject or null",
+  "confidence": 0.0 to 1.0
+}
+"""
+
+
+# ── Fog Detector (Phase 4) ────────────────────────────────────────────────────
+# Scores thought blocks on linguistic friction markers for cognitive fog detection.
+# Returns strength 0.0-1.0 plus matched markers.
+#
+# Placeholders:
+#   {text} — the combined thought block text
+#   {median_pause_ms} — median pause duration in milliseconds (0 if not available)
+[fog_detector]
+system = """
+You are Nodemind's Cognitive Mirror.
+
+Analyze the transcript and map it to one primary fog diagnosis:
+1. Vague Commitments (no clear owner/time/next action) -> tag: unclarity
+2. Circular Loops (same unresolved problem repeated) -> tag: overthinking
+3. Conceptual Blur (too abstract, no concrete object) -> tag: abstraction
+
+Inputs:
+- Transcript: {text}
+- Median pause duration (ms): {median_pause_ms}
+
+Output ONLY valid JSON:
+{
+  "tag": "overthinking|unclarity|abstraction",
+  "context": "short concrete subject being discussed",
+  "intensity": 0.0,
+  "clarity_question": "one sharp coaching question"
+}
+"""
+
+
+# ── Fog Signals Only (raw chunk, real-time) ───────────────────────────────────
+# Lightweight fog signal detection run on every raw transcript chunk.
+# Only detects linguistic friction patterns — no task or topic extraction.
+# Keeps per-chunk processing fast; deep extraction happens at the 5-min mark.
+#
+# Placeholders:
+#   {text} — the raw transcribed speech chunk
+[fog_signals_only]
+template = """
+You are Nodemind's Cognitive Mirror for real-time chunks.
+
+Read the speech and emit diagnosis objects, not plain tags.
+
+Primary taxonomy:
+- unclarity: vague commitments and missing owner/time
+- overthinking: repeated unresolved loop or excessive analysis
+- abstraction: too conceptual, not grounded in a concrete object
+
+Secondary tags (allowed when strongly present):
+- context_switching, stuck, distracted, avoiding, overwhelmed, circular
+
+Speech: "{text}"
+
+Return ONLY valid JSON:
+{
+  "signals": [
+    {
+      "tag": "overthinking",
+      "context": "what the user seems to be focused on",
+      "intensity": 0.0,
+      "clarity_question": "one concrete question to unlock action"
+    }
+  ]
+}
+If no fog is present, return: {"signals": []}
+"""
+
+
+# ── 5-Minute Deep Extraction ──────────────────────────────────────────────────
+# Runs every 5 minutes on the accumulated transcript buffer (ThoughtBlockBuffer).
+# Produces a rich structured extraction used to update tasks, mental map,
+# calendar, meetings, and ambient tray suggestions.
+# Raw chunks only feed fog detection; everything else flows through here.
+#
+# Placeholders:
+#   {transcript}    — 5 minutes of accumulated transcript text
+#   {recent_topics} — comma-separated list of recently active topics (context anchor)
+[five_min_extract]
+template = """
+You are analyzing 5 minutes of a person's ambient stream-of-consciousness speech for a personal assistant app called Nodemind.
+
+Recent context topics (for reference): {recent_topics}
+
+Transcript (5-minute window):
+---
+{transcript}
+---
+
+Extract everything with high detail and precision. Be generous — if something is clearly mentioned, include it.
+
+Rules:
+- tasks.confidence: 1.0 = explicit commitment ("I need to", "I will"), 0.6 = implied ("I should"), 0.3 = vague ("maybe")
+- Only include people who are named or clearly referenced (not generic "someone")
+- calendar_items: only when a specific date, time, or deadline is mentioned
+- connections: link goals/projects/people/tasks that are mentioned together in context
+- For each task/goal/project/topic in this 5-minute window, assign one category: Work | Wellness | Social | Growth
+- Mark connection.relation = "triggers" when phrasing implies cause-and-effect ("after X, I need to Y", "because of X, I should Y")
+- connection.direction should describe cause flow: "from_to" means from -> to, "to_from" means to -> from
+- signal_type: use "intent" for goal-like outcomes, "action" for concrete executable tasks
+- high_impact.resolved_nodes should include items expressed as completed/past-tense resolution ("done", "merged", "sent", "closed")
+- high_impact.stressor_nodes should include items linked to mental loop/high fog/stress
+- high_impact.spark_nodes should include epiphanies, insights, or strong ideas that should stand out
+- tray_suggestions: practical, immediately actionable nudges
+- live_note.summary: one short sentence capturing the main thread of this 5-minute block
+- live_note.highlights: concrete takeaways or notable moments from this block
+- live_note.ideas: ideas, insights, or possibilities worth preserving
+- live_note.tasks: only actionable task bullets explicitly or strongly implied in this block
+- fog_signals: detect cognitive friction patterns from SPEECH PATTERNS ONLY across this 5-minute window:
+  - overthinking: same unresolved question or problem revisited multiple times with no progress
+  - unclarity: commitments mentioned with no clear owner, time, or concrete next action
+  - abstraction: ideas stay purely conceptual, never grounded in a concrete object or step
+  - stuck: strong repeated friction on one specific problem, no movement forward
+  - context_switching: rapid topic jumps with no apparent conclusion on any of them
+  IMPORTANT: Only report fog if genuinely present in speech patterns. Do NOT report fog for short text, blank audio transcriptions (e.g. "[BLANK_AUDIO]", "[silence]", single words, or noise artefacts), or text under 15 words. If no fog is present, return fog_signals: []
+- If a field has nothing relevant, return an empty array []
+
+Return ONLY a valid JSON object. No markdown fences, no explanation, no extra text before or after the JSON.
+Schema:
+{
+  "live_note": {
+    "summary": "one-sentence summary",
+    "highlights": ["..."],
+    "ideas": ["..."],
+    "tasks": ["..."]
+  },
+  "tasks": [
+    {"title": "...", "project": "...", "due_hint": "...", "priority": "high|medium|low", "confidence": 0.0, "category": "Work|Wellness|Social|Growth", "signal_type": "action"}
+  ],
+  "goals": [
+    {"title": "...", "description": "...", "category": "Work|Wellness|Social|Growth", "signal_type": "intent"}
+  ],
+  "people": [
+    {"name": "...", "context": "brief relationship or context"}
+  ],
+  "calendar_items": [
+    {"title": "...", "date_hint": "...", "type": "deadline|meeting|reminder|event"}
+  ],
+  "projects": [
+    {"name": "project name", "category": "Work|Wellness|Social|Growth"}
+  ],
+  "topics": [
+    {"name": "topic name", "category": "Work|Wellness|Social|Growth"}
+  ],
+  "connections": [
+    {"from": "entity name", "to": "entity name", "relation": "blocks|relates_to|works_with|mentions|triggers", "direction": "from_to|to_from"}
+  ],
+  "high_impact": {
+    "resolved_nodes": ["entity or task title"],
+    "stressor_nodes": ["entity or task title"],
+    "spark_nodes": ["entity or task title"]
+  ],
+  "tray_suggestions": [
+    {"text": "actionable suggestion text", "type": "task|focus|habit|reflection", "priority": "high|medium|low"}
+  ],
+  "fog_signals": [
+    {
+      "tag": "overthinking|unclarity|abstraction|stuck|context_switching",
+      "context": "brief description of what the user is looping or stuck on",
+      "intensity": 0.0,
+      "clarity_question": "one sharp coaching question to unlock action"
+    }
+  ]
+}
+"""
+
+
+# ── Task RAG Judge (candidate task approval) ─────────────────────────────────
+# Validates extracted task candidates against today's note context retrieved via
+# lightweight RAG. Only approved tasks should be surfaced as pending suggestions.
+#
+# Placeholders:
+#   {candidate_tasks_json} — JSON array of candidate task titles
+#   {rag_context}          — retrieved context snippets from today's notes/chunks
+[task_rag_judge]
+template = """
+You are validating candidate tasks for Nodemind.
+
+Candidate task titles (JSON array): {candidate_tasks_json}
+
+Retrieved context from today's notes and transcript chunks:
+---
+{rag_context}
+---
+
+Rules:
+- Approve only tasks that are clearly supported by the retrieved context.
+- Reject vague, duplicate, or out-of-context tasks.
+- Normalize wording into concise imperative task text.
+- Return only task suggestions (type=task).
+
+Return ONLY a valid JSON object. No markdown fences, no explanation, no extra text before or after JSON.
+Schema:
+{
+  "approved_tasks": [
+    {"text":"...","priority":"high|medium|low","reason":"short reason"}
+  ]
+}
+If nothing should be approved, return: {"approved_tasks": []}
+"""
+
+
+# ── Goal Horizon Classifier ─────────────────────────────────────────────────
+# Classifies a goal into one planning horizon bucket used by Today view.
+# Placeholders:
+#   {goal_title}
+#   {goal_description}
+[goal_horizon_classifier]
+template = """
+You classify goals by planning horizon for Nodemind.
+
+Goal title: {goal_title}
+Goal description: {goal_description}
+
+Classify as exactly one:
+- spark: short-term goal, immediate next days/weeks, tactical momentum
+- milestone: medium-term goal, project phase/outcome over weeks to months
+- north_star: long-term direction, identity-level or strategic multi-month/annual intent
+
+Return ONLY valid JSON:
+{
+  "horizon": "spark|milestone|north_star",
+  "reason": "one short sentence"
+}
+"""
+

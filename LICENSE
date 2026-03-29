@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Abhishek Rai
+Copyright (c) 2026 Nokast
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,79 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Third-Party Licenses
+--------------------
+
+This software incorporates third-party open-source components. Each component
+is governed by its own license, which is passed through to you unchanged and
+takes precedence over the MIT license above with respect to that component.
+The MIT license above applies only to the original source code in this
+repository.
+
+Key third-party components include (non-exhaustive):
+
+- Tauri (tauri / tauri-build / tauri-plugin-*)
+    License: Apache-2.0 OR MIT
+    https://github.com/tauri-apps/tauri
+
+- React
+    License: MIT
+    https://github.com/facebook/react
+
+- whisper-rs (Rust bindings for whisper.cpp)
+    License: MIT
+    https://github.com/tazz4843/whisper-rs
+
+- whisper.cpp (underlying C++ inference engine)
+    License: MIT
+    https://github.com/ggerganov/whisper.cpp
+
+- cpal (Cross-Platform Audio Library)
+    License: Apache-2.0
+    https://github.com/RustAudio/cpal
+
+- rusqlite (SQLite bindings for Rust)
+    License: MIT
+    https://github.com/rusqlite/rusqlite
+
+- SQLite (bundled)
+    License: Public Domain
+    https://www.sqlite.org/copyright.html
+
+- serde / serde_json
+    License: Apache-2.0 OR MIT
+    https://github.com/serde-rs/serde
+
+- reqwest
+    License: Apache-2.0 OR MIT
+    https://github.com/seanmonstar/reqwest
+
+- tokio
+    License: MIT
+    https://github.com/tokio-rs/tokio
+
+- uuid
+    License: Apache-2.0 OR MIT
+    https://github.com/uuid-rs/uuid
+
+- chrono
+    License: Apache-2.0 OR MIT
+    https://github.com/chronotope/chrono
+
+- hound
+    License: Apache-2.0
+    https://github.com/ruuda/hound
+
+- Vite
+    License: MIT
+    https://github.com/vitejs/vite
+
+- TypeScript
+    License: Apache-2.0
+    https://github.com/microsoft/TypeScript
+
+For the full license text of each component, refer to the respective project
+repositories or the license files distributed alongside their packages.

@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="#101622"/>
+  <path d="M256 132V380" stroke="#E6EEF9" stroke-width="16" stroke-linecap="round"/>
+  <path d="M256 256L356 168" stroke="#E6EEF9" stroke-width="12" stroke-linecap="round"/>
+  <path d="M256 256L366 256" stroke="#E6EEF9" stroke-width="12" stroke-linecap="round"/>
+  <path d="M256 256L356 344" stroke="#E6EEF9" stroke-width="12" stroke-linecap="round"/>
+  <path d="M256 256L156 168" stroke="#E6EEF9" stroke-width="12" stroke-linecap="round"/>
+  <path d="M256 256L146 256" stroke="#E6EEF9" stroke-width="12" stroke-linecap="round"/>
+  <path d="M256 256L156 344" stroke="#E6EEF9" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="256" cy="128" r="28" fill="#4AA3FF"/>
+  <circle cx="360" cy="166" r="28" fill="#4AA3FF"/>
+  <circle cx="384" cy="256" r="28" fill="#4AA3FF"/>
+  <circle cx="360" cy="346" r="28" fill="#2FD08B"/>
+  <circle cx="256" cy="384" r="28" fill="#F5B04A"/>
+  <circle cx="152" cy="346" r="28" fill="#2FD08B"/>
+  <circle cx="128" cy="256" r="28" fill="#2FD08B"/>
+  <circle cx="152" cy="166" r="28" fill="#4AA3FF"/>
+  <circle cx="256" cy="256" r="40" fill="#F2F7FF"/>
+  <circle cx="242" cy="252" r="7" fill="#101622"/>
+  <circle cx="270" cy="252" r="7" fill="#101622"/>
+</svg>
