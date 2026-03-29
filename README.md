@@ -5,8 +5,8 @@
 <h1 align="center">Nodemind by Nokast</h1>
 
 <p align="center">
-  A voice-first, local-only personal assistant for macOS.<br />
-  Think out loud in Hindi or English, and Nodemind turns that stream into tasks, meetings, summaries, suggestions, and a living mental map.
+  A cognition agent for messy, moving minds.<br />
+  Built for founders, builders, and fast thinkers, Nodemind turns spoken thought into structure, direction, and momentum — locally, privately, and on your Mac.
 </p>
 
 <p align="center">
@@ -25,25 +25,29 @@
 
 ## About
 
-Nodemind is designed for people who process ideas by speaking.
+Nodemind is for the moments when your brain is moving faster than your notes.
 
-Instead of forcing you into a chat box or manual note-taking flow, it listens to your spoken thoughts, detects commands, extracts structure, and surfaces what matters in a desktop dashboard.
+It doesn’t try to replace how you think. It helps you catch the thought before it slips away, organize the noise, and surface what actually matters next.
 
-The app is built around a simple idea: your voice can be both input and context.
+Instead of making you pause and type everything into a chat box, Nodemind listens while you talk naturally. It picks up commands, structure, and useful signals from your voice, then turns them into something you can actually work with.
+
+It’s built for people who think out loud — founders, builders, and anyone who has too many ideas moving at once.
 
 With Nodemind, you can:
 
-- speak naturally in Hindi, English, or mixed speech
-- create tasks and goals with voice commands
-- run meeting capture locally and generate notes afterward
-- review suggestions, summaries, and focus directions
-- build a mental map of projects, people, topics, and recurring fog patterns
+* speak naturally in Hindi, English, or mixed speech
+* turn spoken thoughts into tasks and goals
+* capture meetings locally and generate notes afterward
+* review summaries, suggestions, and focus directions
+* build a clearer map of your projects, people, topics, and recurring mental loops
 
-No cloud STT or hosted LLM is required in the core workflow. Your speech, transcripts, and structured context stay on your machine.
+No cloud speech-to-text. No hosted LLM in the core flow. Your voice, transcripts, and structured context stay on your machine.
 
-- Screenshot:
 
-	<img src="public/D4EA9FF6-5E1C-4663-B028-95E80ACFAEE5.png" alt="Nodemind app screenshot" />
+
+### Screenshot:
+
+<img src="public/D4EA9FF6-5E1C-4663-B028-95E80ACFAEE5.png" alt="Nodemind app screenshot" />
 
 ## Install on macOS
 
@@ -66,7 +70,7 @@ Before launching the app, make sure your machine already has:
 3. Before launching the app for the first time, run this command in Terminal because the app is currently unsigned:
 
 ```bash
-sudo xattr -cr /Applications/zac_personal_assistant.app
+sudo xattr -cr /Applications/Nodemind.app
 ```
 
 4. Open Nodemind from `Applications`.
