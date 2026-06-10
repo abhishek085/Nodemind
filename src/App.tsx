@@ -28,6 +28,10 @@ export default function App() {
   const [view, setView] = useState<View>("today");
   const { status, transcript, language, processingFinalNote, toggleListening, setLanguage, clearTranscript } =
     useListening();
+  // Keep a ref so the tray listener always calls the current toggleListening
+  // without needing to re-register the event subscription on every render.
+  const toggleListeningRef = useRef(toggleListening);
+  useEffect(() => { toggleListeningRef.current = toggleListening; }, [toggleListening]);
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
   const [modelLoaded, setModelLoaded] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
@@ -35,9 +39,9 @@ export default function App() {
   const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
   const lastOllamaAvailableRef = useRef<boolean | null>(null);
 
-  // Check Ollama availability on startup
+  // Single interval: check Ollama availability and model warm state together.
   useEffect(() => {
-    const check = async () => {
+    const poll = async () => {
       try {
         const res: {
           available: boolean;
@@ -74,23 +78,15 @@ export default function App() {
         }
         lastOllamaAvailableRef.current = false;
       }
-    };
 
-    check();
-    const id = setInterval(check, 7000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Poll whether the LLM model is warm in memory
-  useEffect(() => {
-    const check = async () => {
       try {
         const loaded: boolean = await invoke("is_model_loaded");
         setModelLoaded(loaded);
       } catch {}
     };
-    check();
-    const id = setInterval(check, 5000);
+
+    poll();
+    const id = setInterval(poll, 6000);
     return () => clearInterval(id);
   }, []);
 
@@ -180,7 +176,7 @@ export default function App() {
         }),
       );
       // Tray menu events
-      fns.push(await listen("tray-toggle-listening", () => toggleListening()));
+      fns.push(await listen("tray-toggle-listening", () => toggleListeningRef.current()));
       fns.push(
         await listen("tray-summarize", () => {
           setView("today");
