@@ -104,10 +104,11 @@ export default function App() {
       }
 
       try {
+        const ollamaAvailable = lastOllamaAvailableRef.current;
         const loaded: boolean = await invoke("is_model_loaded");
         setModelLoaded(loaded);
         // Auto-load the model once when Ollama first becomes available (#27).
-        if (!loaded && ollamaOk && !autoLoadAttemptedRef.current) {
+        if (!loaded && ollamaAvailable && !autoLoadAttemptedRef.current) {
           autoLoadAttemptedRef.current = true;
           invoke("load_model_cmd").catch(() => {});
           flash("Auto-loading LLM model…");
@@ -123,7 +124,7 @@ export default function App() {
     poll();
     const id = setInterval(poll, 6000);
     return () => clearInterval(id);
-  }, [ollamaOk]);
+  }, []);
 
   // Update tray icon state whenever listening status changes
   useEffect(() => {
