@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Task, Goal, GraphNode, GraphEdge } from "../types";
@@ -42,6 +42,10 @@ export default function MentalMapView() {
   const [updatingMap, setUpdatingMap] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null);
+  const svgWrapRef = useRef<HTMLDivElement>(null);
 
   const fetchMapData = async () => {
     try {
@@ -444,6 +448,9 @@ export default function MentalMapView() {
           >
             {updatingMap ? "Updating..." : "Update Mental Map"}
           </button>
+          <button className="action-btn" onClick={() => setZoom((z) => Math.min(3, z * 1.2))} title="Zoom in">+</button>
+          <button className="action-btn" onClick={() => setZoom((z) => Math.max(0.3, z * 0.8))} title="Zoom out">−</button>
+          <button className="action-btn" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} title="Reset view">Reset</button>
           <div className="map-legend">
             {Object.entries(bucketColors)
               .map(([type, color]) => (
@@ -463,7 +470,26 @@ export default function MentalMapView() {
       )}
 
       <div className="map-layout">
-        <div className="map-canvas-wrap">
+        <div
+          className="map-canvas-wrap"
+          ref={svgWrapRef}
+          style={{ overflow: "hidden", cursor: panStart.current ? "grabbing" : "grab" }}
+          onWheel={(e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            setZoom((z) => Math.min(3, Math.max(0.3, z * delta)));
+          }}
+          onMouseDown={(e) => {
+            panStart.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
+          }}
+          onMouseMove={(e) => {
+            if (!panStart.current) return;
+            setPan({ x: panStart.current.px + (e.clientX - panStart.current.mx), y: panStart.current.py + (e.clientY - panStart.current.my) });
+          }}
+          onMouseUp={() => { panStart.current = null; }}
+          onMouseLeave={() => { panStart.current = null; }}
+        >
+          <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }}>
           <svg viewBox="0 0 680 560" className="map-svg" preserveAspectRatio="xMidYMid meet">
             {/* Tier guides */}
             <circle cx={340} cy={280} r={118} fill="none" stroke="#94a3b8" strokeOpacity={0.35} strokeDasharray="4,6" />
@@ -600,6 +626,7 @@ export default function MentalMapView() {
               </marker>
             </defs>
           </svg>
+          </div>
         </div>
 
         {/* Detail panel */}

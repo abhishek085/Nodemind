@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
@@ -9,6 +9,8 @@ import type {
   ActivityItem,
   TranscriptChunk,
   LiveNote,
+  GraphEdge,
+  GraphNode,
 } from "../types";
 import SuggestionModal from "../components/SuggestionModal";
 
@@ -42,6 +44,9 @@ export default function TodayView({
   const [calendarModalOpen, setCalendarModalOpen] = useState(false);
   const [selectedSuggestionForCalendar, setSelectedSuggestionForCalendar] = useState<Suggestion | null>(null);
   const [refreshingSuggestions, setRefreshingSuggestions] = useState(false);
+  const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
+  const [graphEdges, setGraphEdges] = useState<GraphEdge[]>([]);
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null);
 
   const fetchGoals = async () => {
     try {
@@ -78,12 +83,24 @@ export default function TodayView({
     } catch {}
   };
 
+  const fetchGraphData = async () => {
+    try {
+      const [nodes, edges] = await Promise.all([
+        invoke<GraphNode[]>("get_graph_nodes"),
+        invoke<GraphEdge[]>("get_graph_edges"),
+      ]);
+      setGraphNodes(nodes);
+      setGraphEdges(edges);
+    } catch {}
+  };
+
   useEffect(() => {
     fetchGoals();
     fetchSavedSuggestions();
     fetchTranscriptChunks();
     fetchLiveNotes();
     fetchUnprocessedNotesCount();
+    fetchGraphData();
     const id = setInterval(() => {
       fetchGoals();
       fetchSavedSuggestions();
@@ -221,6 +238,62 @@ export default function TodayView({
     });
   };
 
+  // Ghost goal detection: goals with no linked task node in graph (#22).
+  const ghostGoals = useMemo(() => {
+    const goalNodes = graphNodes.filter((n) => n.node_type === "goal");
+    const taskNodes = graphNodes.filter((n) => n.node_type === "task");
+    const linkedGoalIds = new Set<string>();
+    for (const edge of graphEdges) {
+      if (goalNodes.some((g) => g.id === edge.from_node) && taskNodes.some((t) => t.id === edge.to_node)) {
+        linkedGoalIds.add(edge.from_node);
+      }
+      if (goalNodes.some((g) => g.id === edge.to_node) && taskNodes.some((t) => t.id === edge.from_node)) {
+        linkedGoalIds.add(edge.to_node);
+      }
+    }
+    return goalNodes.filter((g) => !linkedGoalIds.has(g.id)).slice(0, 3);
+  }, [graphNodes, graphEdges]);
+
+  // Markdown export (#18).
+  const exportMarkdown = async () => {
+    const lines: string[] = [];
+    lines.push(`# Today — ${new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}`);
+    lines.push("");
+    if (summary) {
+      lines.push("## Summary");
+      lines.push(summary);
+      lines.push("");
+    }
+    if (liveNotes.length > 0) {
+      lines.push("## Live Notes");
+      for (const note of liveNotes) {
+        lines.push(`### ${fmtTime(note.window_started_at)}`);
+        lines.push(note.summary);
+        for (const h of note.highlights) lines.push(`- **Highlight:** ${h}`);
+        for (const t of note.tasks) lines.push(`- **Task:** ${t}`);
+        lines.push("");
+      }
+    }
+    if (activeGoals.length > 0) {
+      lines.push("## Goals");
+      for (const g of activeGoals) lines.push(`- [${g.horizon}] ${g.title}`);
+      lines.push("");
+    }
+    if (dedupedTaskSuggestions.length > 0) {
+      lines.push("## Task Suggestions");
+      for (const s of dedupedTaskSuggestions) lines.push(`- ${s.text}`);
+      lines.push("");
+    }
+    const md = lines.join("\n");
+    try {
+      await navigator.clipboard.writeText(md);
+      setExportFeedback("Copied to clipboard!");
+    } catch {
+      setExportFeedback("Export failed — clipboard not available");
+    }
+    setTimeout(() => setExportFeedback(null), 3000);
+  };
+
   const liveNoteCount = liveNotes.length;
   const visibleSuggestions = suggestions.filter((s) => s.status === undefined || s.status === "pending");
 
@@ -272,12 +345,51 @@ export default function TodayView({
           <button className="action-btn" onClick={summarize30} disabled={summarizing}>
             {summarizing ? "..." : "Summarize 30 min"}
           </button>
+          <button className="action-btn" onClick={exportMarkdown} title="Export today's notes as Markdown">
+            Export MD
+          </button>
         </div>
       </div>
 
       {actionFeedback && (
         <div className="card feedback-card">
           <p className="feedback-text">{actionFeedback}</p>
+        </div>
+      )}
+
+      {exportFeedback && (
+        <div className="card feedback-card">
+          <p className="feedback-text">{exportFeedback}</p>
+        </div>
+      )}
+
+      {/* Ghost goal alert (#22): goals with no linked action nodes */}
+      {ghostGoals.length > 0 && (
+        <div className="card" style={{ borderColor: "rgba(245, 158, 11, 0.4)", background: "rgba(245, 158, 11, 0.06)" }}>
+          <div className="card-label">Ghost Goals — no actions linked</div>
+          {ghostGoals.map((g) => (
+            <p key={g.id} className="hint-text" style={{ margin: "4px 0" }}>
+              ⚠️ {g.label} — say a task that relates to this goal to link it
+            </p>
+          ))}
+        </div>
+      )}
+
+      {/* Contextual voice hints (#14, #29) */}
+      {listeningStatus === "off" && liveNotes.length === 0 && (
+        <div className="card" style={{ borderColor: "rgba(99, 102, 241, 0.3)", background: "rgba(99, 102, 241, 0.05)" }}>
+          <div className="card-label">Try saying…</div>
+          <div className="voice-hints">
+            {[
+              "My goal is to ship the feature by Friday",
+              "Remind me to follow up with Raghav tomorrow",
+              "I'm stuck on the auth flow — not sure how to proceed",
+              "I am taking a meeting now with the team about sprint planning",
+              "Block two hours this afternoon for deep work",
+            ].map((hint) => (
+              <span key={hint} className="voice-hint-chip">{hint}</span>
+            ))}
+          </div>
         </div>
       )}
 

@@ -1236,6 +1236,52 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                     // Push transcript to UI immediately; keep analysis on background paths.
                     let _ = app_handle.emit("transcript-chunk", trimmed.clone());
 
+                    // Heuristic meeting phrase detection (#28 — broader auto-detection).
+                    {
+                        let lower = trimmed.to_lowercase();
+                        let already_active = active_meeting_clone.lock().unwrap().is_some();
+                        let start_phrases = [
+                            "taking a meeting", "in a meeting", "jumping on a call",
+                            "joining a call", "let's get started", "let me start the meeting",
+                            "standup starting", "stand up starting", "daily standup",
+                            "hopping on a call", "meeting starting", "meeting starts now",
+                            "we're having our", "we are having our", "sync starting",
+                            "call starting", "on a zoom", "on a call now",
+                        ];
+                        let end_phrases = [
+                            "meeting over", "meeting ended", "meeting done",
+                            "end of meeting", "that's all for today", "that's a wrap",
+                            "wrapping up the meeting", "ending the call", "call ended",
+                            "closing the meeting", "meeting adjourned",
+                        ];
+
+                        if !already_active && start_phrases.iter().any(|p| lower.contains(p)) {
+                            // Auto-start a meeting with a generic title derived from context.
+                            let title = "Auto-detected meeting".to_string();
+                            let mid = Uuid::new_v4().to_string();
+                            let meeting = Meeting {
+                                id: mid.clone(),
+                                title: title.clone(),
+                                person: None,
+                                started_at: Utc::now().to_rfc3339(),
+                                ended_at: None,
+                                summary: None,
+                                action_items: None,
+                                transcript: None,
+                            };
+                            if let Ok(conn) = open_db() {
+                                let _ = db::upsert_meeting(&conn, &meeting);
+                            }
+                            *active_meeting_clone.lock().unwrap() = Some(mid);
+                            let _ = app_handle.emit("meeting-started", ());
+                        } else if already_active && end_phrases.iter().any(|p| lower.contains(p)) {
+                            let _ = app_handle.emit("meeting-ended", ());
+                            // The full end_meeting logic runs via the tauri command;
+                            // here we just clear the ID so the banner disappears.
+                            *active_meeting_clone.lock().unwrap() = None;
+                        }
+                    }
+
                     let meeting_id = active_meeting_clone.lock().unwrap().clone();
                     let chunk = TranscriptChunk {
                         id: Uuid::new_v4().to_string(),
@@ -1316,6 +1362,14 @@ fn get_tasks(_state: tauri::State<AppState>) -> Vec<Task> {
 fn mark_task_done(_state: tauri::State<AppState>, id: String) -> bool {
     match open_db() {
         Ok(conn) => db::mark_task_done(&conn, &id).is_ok(),
+        Err(_) => false,
+    }
+}
+
+#[tauri::command]
+fn unmark_task_done(_state: tauri::State<AppState>, id: String) -> bool {
+    match open_db() {
+        Ok(conn) => db::unmark_task_done(&conn, &id).is_ok(),
         Err(_) => false,
     }
 }
@@ -2541,6 +2595,7 @@ fn main() {
             get_unprocessed_notes_count,
             get_tasks,
             mark_task_done,
+            unmark_task_done,
             create_task,
             get_goals,
             create_goal,
