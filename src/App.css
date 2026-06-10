@@ -1571,3 +1571,35 @@ input, textarea { font: inherit; color: inherit; }
   .reflection-card { border-left-color: #ff9500; border-right-color: rgba(255, 149, 0, 0.3); }
   .suggestion-confidence { background: rgba(255, 255, 255, 0.05); }
 }
+
+/* ── Global meeting banner (#15) ─────────────────────────── */
+.global-meeting-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px;
+  background: rgba(48, 209, 88, 0.12); border-bottom: 1px solid rgba(48, 209, 88, 0.3);
+  font-size: 12px; font-weight: 600; color: #1a7a35;
+  position: sticky; top: 48px; z-index: 50;
+}
+@media (prefers-color-scheme: dark) { .global-meeting-banner { color: #5edd88; } }
+.action-btn-sm { padding: 2px 8px; font-size: 11px; }
+
+/* ── Meeting summary snippet (#30) ──────────────────────── */
+.meeting-summary-snippet {
+  font-size: 11px; color: var(--text-2);
+  margin: 4px 0 0; line-height: 1.4;
+}
+
+/* ── Voice hint chips (#14, #29) ─────────────────────────── */
+.voice-hints { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.voice-hint-chip {
+  font-size: 11px; padding: 4px 8px; border-radius: 20px;
+  background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.2);
+  color: var(--text-2); font-style: italic;
+}
+
+/* ── Completed task row (#16) ─────────────────────────────── */
+.task-row-done { opacity: 0.75; }
+.task-check-done { color: var(--success); font-size: 14px; width: 24px; text-align: center; }
+
+/* ── Map pan/zoom (#24) ───────────────────────────────────── */
+.map-canvas-wrap { user-select: none; }

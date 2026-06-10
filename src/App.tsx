@@ -37,9 +37,33 @@ export default function App() {
   const [notification, setNotification] = useState<string | null>(null);
   const [triggerSummarize, setTriggerSummarize] = useState(0);
   const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
   const lastOllamaAvailableRef = useRef<boolean | null>(null);
+  const autoLoadAttemptedRef = useRef(false);
+  const prevStatusRef = useRef<typeof status>(status);
 
-  // Single interval: check Ollama availability and model warm state together.
+  // Auto-start listening on launch after a brief delay.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      if (status === "off") {
+        toggleListeningRef.current();
+      }
+    }, 1500);
+    return () => clearTimeout(id);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Detect when listening stops → auto-run suggestions + map update (#12, #20).
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if (prev === "listening" && status !== "listening") {
+      invoke("refresh_suggestions").catch(() => {});
+      invoke("refresh_mental_map").catch(() => {});
+      flash("Listening stopped — refreshing suggestions and map…");
+    }
+  }, [status]);
+
+  // Single interval: check Ollama availability, model warm state, and active meeting.
   useEffect(() => {
     const poll = async () => {
       try {
@@ -80,8 +104,20 @@ export default function App() {
       }
 
       try {
+        const ollamaAvailable = lastOllamaAvailableRef.current;
         const loaded: boolean = await invoke("is_model_loaded");
         setModelLoaded(loaded);
+        // Auto-load the model once when Ollama first becomes available (#27).
+        if (!loaded && ollamaAvailable && !autoLoadAttemptedRef.current) {
+          autoLoadAttemptedRef.current = true;
+          invoke("load_model_cmd").catch(() => {});
+          flash("Auto-loading LLM model…");
+        }
+      } catch {}
+
+      try {
+        const mid: string | null = await invoke("get_active_meeting");
+        setActiveMeetingId(mid);
       } catch {}
     };
 
@@ -107,11 +143,15 @@ export default function App() {
           flash(`⌨️  "${e.payload.slice(0, 60)}"`),
         ),
       );
-      fns.push(await listen("meeting-started", () => flash("🤝 Meeting started")));
+      fns.push(await listen("meeting-started", () => {
+        flash("🤝 Meeting started");
+        invoke<string | null>("get_active_meeting").then((mid) => setActiveMeetingId(mid)).catch(() => {});
+      }));
       fns.push(
-        await listen("meeting-ended", () =>
-          flash("✅ Meeting ended — generating notes…"),
-        ),
+        await listen("meeting-ended", () => {
+          flash("✅ Meeting ended — generating notes…");
+          setActiveMeetingId(null);
+        }),
       );
       fns.push(await listen("goal-created", () => flash("🎯 Goal saved!")));
       fns.push(await listen("task-created", () => flash("✅ Task saved!")));
@@ -246,6 +286,20 @@ export default function App() {
         </div>
       </header>
 
+      {/* ── Global meeting banner (#15) ────────────────── */}
+      {activeMeetingId && (
+        <div className="global-meeting-banner">
+          <span className="meeting-live-dot pulse" />
+          <span>Meeting in progress</span>
+          <button
+            className="action-btn action-btn-sm"
+            onClick={() => { invoke("end_meeting").catch(() => {}); setActiveMeetingId(null); }}
+          >
+            End
+          </button>
+        </div>
+      )}
+
       {/* ── Toast ──────────────────────────────────────── */}
       {notification && <div className="toast-bar">{notification}</div>}
 
@@ -299,7 +353,7 @@ export default function App() {
           )}
           {view === "tasks" && <TaskListView />}
           {view === "map" && <MentalMapView />}
-          {view === "meetings" && <MeetingsView />}
+          {view === "meetings" && <MeetingsView activeMeetingId={activeMeetingId} onMeetingEnd={() => setActiveMeetingId(null)} />}
           {view === "fog" && <FogView />}
           {view === "calendar" && <CalendarView />}
           {view === "notes" && <HistoricalNotesView onOpenToday={() => setView("today")} />}

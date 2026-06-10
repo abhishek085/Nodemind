@@ -8,6 +8,7 @@ export default function TaskListView() {
   const [newTitle, setNewTitle] = useState("");
   const [newProject, setNewProject] = useState("");
   const [newDue, setNewDue] = useState("");
+  const [showDone, setShowDone] = useState(false);
   const [calendarModalOpen, setCalendarModalOpen] = useState(false);
   const [selectedTaskForCalendar, setSelectedTaskForCalendar] = useState<Task | null>(null);
 
@@ -50,7 +51,7 @@ export default function TaskListView() {
     await invoke("create_task", {
       title,
       project: newProject.trim() || null,
-      dueHint: newDue.trim() || null,
+      due_hint: newDue.trim() || null,
     });
 
     setNewTitle("");
@@ -61,6 +62,11 @@ export default function TaskListView() {
 
   const completeTask = async (id: string) => {
     await invoke("mark_task_done", { id });
+    await loadTasks();
+  };
+
+  const undoTask = async (id: string) => {
+    await invoke("unmark_task_done", { id });
     await loadTasks();
   };
 
@@ -99,10 +105,11 @@ export default function TaskListView() {
             onChange={(e) => setNewProject(e.target.value)}
           />
           <input
+            type="date"
             className="qa-input qa-small"
-            placeholder="Due"
             value={newDue}
             onChange={(e) => setNewDue(e.target.value)}
+            title="Due date"
           />
           <button className="qa-btn" onClick={addTask}>
             +
@@ -148,8 +155,29 @@ export default function TaskListView() {
       )}
 
       {completedCount > 0 && (
-        <div className="card" style={{ marginTop: "1rem", padding: "0.8rem 1rem", opacity: 0.8 }}>
-          {completedCount} completed task{completedCount === 1 ? "" : "s"} hidden from this list.
+        <div className="card" style={{ marginTop: "1rem", padding: "0.8rem 1rem" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showDone ? "0.75rem" : 0 }}>
+            <span className="hint-text">{completedCount} completed task{completedCount === 1 ? "" : "s"}</span>
+            <button className="action-btn" onClick={() => setShowDone((v) => !v)}>
+              {showDone ? "Hide" : "Show"} completed
+            </button>
+          </div>
+          {showDone && (
+            <div>
+              {tasks.filter((t) => t.done).map((task) => (
+                <div key={task.id} className="task-row task-row-done">
+                  <span className="task-check task-check-done">✓</span>
+                  <div className="task-body" style={{ opacity: 0.6 }}>
+                    <span className="task-title" style={{ textDecoration: "line-through" }}>{task.title}</span>
+                    {task.due_hint && <span className="task-due">{task.due_hint}</span>}
+                  </div>
+                  <button className="sug-btn sug-accept" onClick={() => undoTask(task.id)} title="Undo completion">
+                    Undo
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

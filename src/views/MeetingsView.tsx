@@ -4,22 +4,28 @@ import type { Meeting } from "../types";
 
 type Tab = "meetings" | "people";
 
-export default function MeetingsView() {
+interface Props {
+  activeMeetingId: string | null;
+  onMeetingEnd?: () => void;
+}
+
+export default function MeetingsView({ activeMeetingId: propActiveMeetingId, onMeetingEnd }: Props) {
   const [tab, setTab] = useState<Tab>("meetings");
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selected, setSelected] = useState<Meeting | null>(null);
-  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(propActiveMeetingId);
   const [newTitle, setNewTitle] = useState("");
   const [newPerson, setNewPerson] = useState("");
   const [actionItemsParsed, setActionItemsParsed] = useState<string[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<string | null>(null);
 
+  // Sync prop changes from App-level active meeting state.
+  useEffect(() => { setActiveMeetingId(propActiveMeetingId); }, [propActiveMeetingId]);
+
   const fetchMeetings = async () => {
     try {
       const m: Meeting[] = await invoke("get_meetings");
       setMeetings(m);
-      const active: string | null = await invoke("get_active_meeting");
-      setActiveMeetingId(active);
     } catch {}
   };
 
@@ -55,6 +61,8 @@ export default function MeetingsView() {
 
   const endMeeting = async () => {
     await invoke("end_meeting");
+    setActiveMeetingId(null);
+    onMeetingEnd?.();
     fetchMeetings();
   };
 
@@ -182,6 +190,11 @@ export default function MeetingsView() {
                       {formatDuration(m.started_at, m.ended_at)}
                     </span>
                   </div>
+                  {m.summary && (
+                    <p className="meeting-summary-snippet">
+                      {m.summary.slice(0, 120)}{m.summary.length > 120 ? "…" : ""}
+                    </p>
+                  )}
                 </div>
               ))
             )}

@@ -451,6 +451,11 @@ pub fn mark_task_done(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn unmark_task_done(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("UPDATE tasks SET done=0 WHERE id=?1", params![id])?;
+    Ok(())
+}
+
 // ── Goals ─────────────────────────────────────────────────────────────────────
 
 pub fn insert_goal(conn: &Connection, goal: &Goal) -> Result<()> {
