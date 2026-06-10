@@ -73,75 +73,43 @@ export default function FogView() {
   const [fogDetails, setFogDetails] = useState<FogDetail[]>([]);
   const [bucketAlert, setBucketAlert] = useState<string | null>(null);
 
-  const loadFogDetails = async () => {
+  const loadFogData = async () => {
     try {
-      const details: FogDetail[] = await invoke("get_fog_details", { hours: 24 });
+      const [s, details, nodes] = await Promise.all([
+        invoke<FogStat[]>("get_fog_stats_cmd"),
+        invoke<FogDetail[]>("get_fog_details", { hours: 24 }),
+        invoke<GraphNodeLite[]>("get_graph_nodes"),
+      ]);
+      setStats(s);
       setFogDetails(details || []);
-    } catch {
-      setFogDetails([]);
-    }
+      const counts = { Work: 0, Wellness: 0, Social: 0, Growth: 0 };
+      for (const node of nodes || []) {
+        if (!node.data) continue;
+        try {
+          const meta = JSON.parse(node.data) as { category?: string };
+          const c = (meta.category || "").trim();
+          if (c === "Work" || c === "Wellness" || c === "Social" || c === "Growth") {
+            counts[c] += 1;
+          }
+        } catch {
+          // Ignore malformed metadata payloads.
+        }
+      }
+      const total = counts.Work + counts.Wellness + counts.Social + counts.Growth;
+      if (total > 0) {
+        const workPct = (counts.Work / total) * 100;
+        setBucketAlert(
+          workPct >= 90 && counts.Growth === 0
+            ? "Your map is heavily Work-weighted and has no Growth nodes today. Consider a short reflection block to restore balance."
+            : null,
+        );
+      }
+    } catch {}
   };
+
   useEffect(() => {
-    (async () => {
-      try {
-        const s: FogStat[] = await invoke("get_fog_stats_cmd");
-        setStats(s);
-        await loadFogDetails();
-        const nodes: GraphNodeLite[] = await invoke("get_graph_nodes");
-        const counts = { Work: 0, Wellness: 0, Social: 0, Growth: 0 };
-        for (const node of nodes || []) {
-          if (!node.data) continue;
-          try {
-            const meta = JSON.parse(node.data) as { category?: string };
-            const c = (meta.category || "").trim();
-            if (c === "Work" || c === "Wellness" || c === "Social" || c === "Growth") {
-              counts[c] += 1;
-            }
-          } catch {
-            // Ignore malformed metadata payloads.
-          }
-        }
-        const total = counts.Work + counts.Wellness + counts.Social + counts.Growth;
-        if (total > 0) {
-          const workPct = (counts.Work / total) * 100;
-          if (workPct >= 90 && counts.Growth === 0) {
-            setBucketAlert("Your map is heavily Work-weighted and has no Growth nodes today. Consider a short reflection block to restore balance.");
-          } else {
-            setBucketAlert(null);
-          }
-        }
-      } catch {}
-    })();
-    const id = setInterval(async () => {
-      try {
-        const s: FogStat[] = await invoke("get_fog_stats_cmd");
-        setStats(s);
-        await loadFogDetails();
-        const nodes: GraphNodeLite[] = await invoke("get_graph_nodes");
-        const counts = { Work: 0, Wellness: 0, Social: 0, Growth: 0 };
-        for (const node of nodes || []) {
-          if (!node.data) continue;
-          try {
-            const meta = JSON.parse(node.data) as { category?: string };
-            const c = (meta.category || "").trim();
-            if (c === "Work" || c === "Wellness" || c === "Social" || c === "Growth") {
-              counts[c] += 1;
-            }
-          } catch {
-            // Ignore malformed metadata payloads.
-          }
-        }
-        const total = counts.Work + counts.Wellness + counts.Social + counts.Growth;
-        if (total > 0) {
-          const workPct = (counts.Work / total) * 100;
-          if (workPct >= 90 && counts.Growth === 0) {
-            setBucketAlert("Your map is heavily Work-weighted and has no Growth nodes today. Consider a short reflection block to restore balance.");
-          } else {
-            setBucketAlert(null);
-          }
-        }
-      } catch {}
-    }, 10000);
+    loadFogData();
+    const id = setInterval(loadFogData, 10000);
     return () => clearInterval(id);
   }, []);
 

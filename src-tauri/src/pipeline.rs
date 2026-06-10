@@ -34,11 +34,6 @@ impl ThoughtBlockBuffer {
         }
     }
 
-    /// Creates a buffer with default 5-minute flush window.
-    pub fn default() -> Self {
-        Self::new(Duration::from_secs(300))
-    }
-
     /// Adds a segment to the buffer and returns true if the buffer should flush.
     pub fn add_segment(&self, text: &str) -> bool {
         let now = SystemTime::now();
@@ -98,6 +93,12 @@ impl ThoughtBlockBuffer {
         Some(block)
     }
 
+}
+
+impl Default for ThoughtBlockBuffer {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(300))
+    }
 }
 
 /// A complete thought block ready for LLM processing.

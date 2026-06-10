@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Suggestion } from "../types";
 
@@ -21,6 +21,17 @@ export default function SuggestionModal({
   const [endTime, setEndTime] = useState("10:00");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Reset form whenever the modal opens or a different suggestion is passed in.
+  useEffect(() => {
+    if (isOpen) {
+      setTitle(suggestion.text);
+      setDate(new Date().toISOString().split("T")[0]);
+      setStartTime("09:00");
+      setEndTime("10:00");
+      setError(null);
+    }
+  }, [isOpen, suggestion]);
 
   if (!isOpen) return null;
 

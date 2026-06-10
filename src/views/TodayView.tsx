@@ -153,7 +153,7 @@ export default function TodayView({
         await invoke("create_task", {
           title: suggestion.text,
           project: null,
-          dueHint: null,
+          due_hint: null,
         });
       }
       await invoke("update_suggestion_status", { id: suggestion.id, status: "accepted" });
