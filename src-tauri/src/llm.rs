@@ -5,6 +5,11 @@ use std::time::Instant;
 // Ollama default endpoint
 const OLLAMA_URL: &str = "http://127.0.0.1:11434/api/generate";
 
+/// Real-time model — fog detection, live tagging (≤400 tokens, fast)
+pub const REALTIME_MODEL: &str = "gemma4:e4b";
+/// Batch model — entity extraction, graph building, meeting summary, suggestions
+pub const BATCH_MODEL: &str = "qwen3.5:9b";
+
 #[derive(Debug, Serialize)]
 struct OllamaRequest<'a> {
     model: &'a str,
@@ -658,4 +663,265 @@ pub fn classify_goal_horizon(model: &str, title: &str, description: Option<&str>
             default
         }
     }
+}
+
+// ── New batch extraction prompt (Qwen3.5 9B) ─────────────────────────────────
+
+/// Batch entity extraction using the new Qwen3.5 9B prompt spec.
+/// Returns JSON: {"entities":[...],"edges":[...],"fog_signals":[...],"tasks":[...]}
+pub fn batch_entity_extract(model: &str, note_text: &str) -> String {
+    let default = r#"{"entities":[],"edges":[],"fog_signals":[],"tasks":[]}"#;
+    if note_text.trim().is_empty() {
+        return default.to_string();
+    }
+    let capped: String = note_text.chars().take(8000).collect();
+    let prompt = prompts::get().batch_entity_extract.template
+        .replace("{note_text}", &capped);
+
+    match ollama_complete_json(model, &prompt) {
+        Ok(r) => {
+            let extracted = extract_json_object(&r);
+            match serde_json::from_str::<serde_json::Value>(&extracted) {
+                Ok(v) if v.get("entities").is_some() => extracted,
+                Ok(_) => {
+                    eprintln!("[nodemind] batch_entity_extract: unexpected JSON shape");
+                    default.to_string()
+                }
+                Err(e) => {
+                    eprintln!("[nodemind] batch_entity_extract: JSON parse failed: {}", e);
+                    default.to_string()
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[nodemind] batch_entity_extract: LLM error: {}", e);
+            format!(r#"{{"entities":[],"edges":[],"fog_signals":[],"tasks":[],"error":"{}"}}"#, e)
+        }
+    }
+}
+
+// ── Drift analysis (weekly, Gemma4 E4B) ────────────────────────────────────
+
+/// Analyse which goals are drifting compared to recent topic activity.
+/// Returns JSON: {"drifting_goals":[{"goal":"label","days_since_mentioned":7,"drift_score":0.8}]}
+pub fn drift_analysis(model: &str, goal_labels: &str, recent_topics: &str) -> String {
+    let default = r#"{"drifting_goals":[]}"#;
+    let prompt = prompts::get().drift_analysis.template
+        .replace("{goal_labels}", goal_labels)
+        .replace("{recent_topics}", recent_topics);
+
+    match ollama_complete_json(model, &prompt) {
+        Ok(r) => {
+            let extracted = extract_json_object(&r);
+            match serde_json::from_str::<serde_json::Value>(&extracted) {
+                Ok(v) if v.get("drifting_goals").is_some() => extracted,
+                _ => default.to_string(),
+            }
+        }
+        Err(e) => {
+            eprintln!("[nodemind] drift_analysis: LLM error: {}", e);
+            default.to_string()
+        }
+    }
+}
+
+// ── Real-time fog tag (Gemma4 E4B, ≤ 250 tokens) ───────────────────────────
+
+/// Lightweight real-time fog detection for 60-second transcript windows.
+/// Returns JSON: {"topic":"one_word","fog":true,"energy":"high|low|neutral","tag":"project|personal|unclear"}
+pub fn realtime_fog_tag(model: &str, transcript: &str) -> String {
+    let default = r#"{"topic":"unknown","fog":false,"energy":"neutral","tag":"unclear"}"#;
+    if transcript.trim().is_empty() {
+        return default.to_string();
+    }
+    let capped: String = transcript.chars().take(800).collect();
+    let prompt = prompts::get().realtime_fog.template
+        .replace("{transcript}", &capped);
+
+    match ollama_complete_json(model, &prompt) {
+        Ok(r) => {
+            let extracted = extract_json_object(&r);
+            match serde_json::from_str::<serde_json::Value>(&extracted) {
+                Ok(_) => extracted,
+                Err(_) => default.to_string(),
+            }
+        }
+        Err(_) => default.to_string(),
+    }
+}
+
+// ── Contradiction surface (Qwen3.5 9B, weekly) ──────────────────────────────
+
+/// Surface contradictions between stated intentions and recent actions.
+/// Returns JSON: {"contradictions":[{"intention":"...","conflicting_action":"...","severity":"medium|high","explanation":"..."}]}
+pub fn contradiction_surface(model: &str, intention_list: &str, action_list: &str) -> String {
+    let default = r#"{"contradictions":[]}"#;
+    let prompt = prompts::get().contradiction_surface.template
+        .replace("{intention_list}", intention_list)
+        .replace("{action_list}", action_list);
+
+    match ollama_complete_json(model, &prompt) {
+        Ok(r) => {
+            let extracted = extract_json_object(&r);
+            match serde_json::from_str::<serde_json::Value>(&extracted) {
+                Ok(v) if v.get("contradictions").is_some() => extracted,
+                _ => default.to_string(),
+            }
+        }
+        Err(e) => {
+            eprintln!("[nodemind] contradiction_surface: LLM error: {}", e);
+            default.to_string()
+        }
+    }
+}
+
+/// Heuristic: is a transcript likely a meeting?
+/// True when ≥2 person names are present AND scheduling language is detected.
+/// No LLM call needed.
+pub fn is_probable_meeting(transcript: &str, person_names: &[String]) -> bool {
+    if person_names.len() < 2 {
+        return false;
+    }
+    let lower = transcript.to_lowercase();
+    let time_phrases = [
+        "let's schedule", "by friday", "next week", "tomorrow", "next month",
+        "action item", "follow up", "follow-up", "deadline",
+        "meeting", "call", "sync", "discuss", "agenda",
+    ];
+    time_phrases.iter().any(|phrase| lower.contains(phrase))
+}
+
+/// Post-extraction validation using Gemma4 E4B.
+///
+/// After Qwen3.5 extracts entities, pass the result through this function to:
+/// - Drop transcription noise / gibberish labels
+/// - Fix task titles that are not actionable (rewrite as imperatives)
+/// - Keep people, projects, goals, topics that look coherent
+///
+/// On any failure (Ollama offline, JSON parse error, etc.) the original
+/// `extracted_json` is returned unchanged so the pipeline is never blocked.
+pub fn validate_extraction(extracted_json: &str) -> String {
+    // Parse the full extraction to build a flat item list for Gemma4.
+    let parsed = match serde_json::from_str::<serde_json::Value>(extracted_json) {
+        Ok(v) => v,
+        Err(_) => return extracted_json.to_string(),
+    };
+
+    // Build a compact flat list: [{"id":"t0","label":"...","type":"..."}]
+    // id prefix encodes which array the item came from for easy mapping.
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let array_defs: &[(&str, &str)] = &[
+        ("tasks",    "task"),
+        ("goals",    "goal"),
+        ("people",   "person"),
+        ("projects", "project"),
+        ("topics",   "topic"),
+    ];
+
+    for (key, type_tag) in array_defs {
+        if let Some(arr) = parsed[key].as_array() {
+            for (i, item) in arr.iter().enumerate() {
+                let label = match type_tag {
+                    &"task"    => item["title"].as_str().unwrap_or(""),
+                    &"goal"    => item["title"].as_str().unwrap_or(""),
+                    &"person"  => item["name"].as_str().unwrap_or(""),
+                    &"project" => item["name"].as_str()
+                        .or_else(|| item.as_str())
+                        .unwrap_or(""),
+                    _          => item["name"].as_str().unwrap_or(""),
+                };
+                if label.is_empty() { continue; }
+                items.push(serde_json::json!({
+                    "id": format!("{}{}", &type_tag[..1], i),
+                    "label": label,
+                    "type": type_tag
+                }));
+            }
+        }
+    }
+
+    // Nothing to validate — return original.
+    if items.is_empty() {
+        return extracted_json.to_string();
+    }
+
+    // Cap items to keep prompt under 350 tokens (~20 items is safe).
+    items.truncate(20);
+
+    let items_json = match serde_json::to_string(&items) {
+        Ok(s) => s,
+        Err(_) => return extracted_json.to_string(),
+    };
+
+    let prompt = prompts::get().extraction_validator.template
+        .replace("{items_json}", &items_json);
+
+    let validation = match ollama_complete_json(REALTIME_MODEL, &prompt) {
+        Ok(r) => extract_json_object(&r),
+        Err(e) => {
+            eprintln!("[nodemind] validate_extraction: Gemma4 unavailable ({}), skipping", e);
+            return extracted_json.to_string();
+        }
+    };
+
+    let val_json = match serde_json::from_str::<serde_json::Value>(&validation) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[nodemind] validate_extraction: JSON parse failed: {}", e);
+            return extracted_json.to_string();
+        }
+    };
+
+    let keep: std::collections::HashSet<String> = val_json["keep"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+
+    let fixes: std::collections::HashMap<String, String> = val_json["fix"]
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // If Gemma4 kept nothing (likely a bad response), return original unchanged.
+    if keep.is_empty() && fixes.is_empty() {
+        return extracted_json.to_string();
+    }
+
+    // Apply validation results back to the original extraction JSON.
+    let mut output = parsed.clone();
+
+    for (key, type_tag) in array_defs {
+        if let Some(arr) = parsed[key].as_array() {
+            let filtered: Vec<serde_json::Value> = arr.iter().enumerate().filter_map(|(i, item)| {
+                let vid = format!("{}{}", &type_tag[..1], i);
+                if keep.contains(&vid) {
+                    Some(item.clone())
+                } else if let Some(corrected) = fixes.get(&vid) {
+                    // Apply label correction in-place.
+                    let mut patched = item.clone();
+                    let label_key = match *type_tag {
+                        "task" | "goal" => "title",
+                        "person"        => "name",
+                        _               => "name",
+                    };
+                    if let Some(obj) = patched.as_object_mut() {
+                        obj.insert(label_key.to_string(), serde_json::json!(corrected));
+                    }
+                    Some(patched)
+                } else {
+                    None // drop this item
+                }
+            }).collect();
+
+            if let Some(obj) = output.as_object_mut() {
+                obj.insert(key.to_string(), serde_json::json!(filtered));
+            }
+        }
+    }
+
+    serde_json::to_string(&output).unwrap_or_else(|_| extracted_json.to_string())
 }

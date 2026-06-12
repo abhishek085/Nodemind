@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod db;
+mod graph;
 mod llm;
 mod prompts;
 mod pipeline;
@@ -31,6 +32,11 @@ struct AppState {
     last_ollama_warning_ts: Arc<Mutex<i64>>,
     last_ollama_autostart_ts: Arc<Mutex<i64>>,
     thought_buffer: ThoughtBlockBuffer,
+    /// Count of live_notes saved since the last batch analysis run.
+    /// When this reaches 5, a batch analysis is triggered automatically.
+    unprocessed_note_count: Arc<Mutex<u32>>,
+    /// True while voice recording is active — used to pause batch analysis.
+    is_recording: Arc<AtomicBool>,
 }
 
 fn save_buffered_live_note(model: &str, block: pipeline::ThoughtBlock, app: &tauri::AppHandle) {
@@ -351,6 +357,18 @@ fn resolve_or_create_graph_node(
         return Some((id, ty));
     }
 
+    // Use Levenshtein dedup before creating a new node
+    if !node_type_hint.is_empty() {
+        if let Some(existing_id) = graph::find_similar_node(conn, label, node_type_hint) {
+            let _ = db::increment_node_field(conn, &existing_id, "mentions_count", 1);
+            if let Ok(nodes) = db::get_nodes(conn) {
+                if let Some(node) = nodes.iter().find(|n| n.id == existing_id) {
+                    return Some((existing_id, node.node_type.clone()));
+                }
+            }
+        }
+    }
+
     let resolved_type = if node_type_hint.is_empty() { "topic" } else { node_type_hint };
     let node_id = format!("{}-{}", resolved_type, slugify_label(label));
     let node = db::GraphNode {
@@ -359,6 +377,9 @@ fn resolve_or_create_graph_node(
         label: label.trim().to_string(),
         data: None,
         created_at: Utc::now().to_rfc3339(),
+        mentions_count: 1,
+        last_mentioned_at: Some(Utc::now().to_rfc3339()),
+        sentiment: "neutral".to_string(),
     };
     let _ = db::insert_node(conn, &node);
     Some((node_id, resolved_type.to_string()))
@@ -518,7 +539,6 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
     let listening_clone = Arc::clone(&state.listening);
     let stop_signal_clone = Arc::clone(&state.stop_signal);
     let active_meeting_clone = Arc::clone(&state.active_meeting_id);
-    let llm_model_clone = Arc::clone(&state.llm_model);
     let app_handle = app.clone();
     // Clone shares the same Arc-backed internal storage — buffer is shared across threads.
     let thought_buffer_clone = state.thought_buffer.clone();
@@ -653,7 +673,7 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                         // Skip blank/very short blocks for fog
                         let word_count = fog_text.split_whitespace().count();
                         if word_count >= 15 {
-                            let fog_result = llm::fog_signals_only(&model, &fog_text);
+                            let fog_result = llm::fog_signals_only(llm::REALTIME_MODEL, &fog_text);
                             let ah = extract_worker_app.clone();
                             if let Ok(fog_json) = serde_json::from_str::<serde_json::Value>(&fog_result) {
                                 if let Some(signals) = fog_json["signals"].as_array() {
@@ -712,7 +732,9 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                         .unwrap_or_default()
                         .join(", ");
 
-                    let extracted = llm::five_min_extract(&model, &combined_text, &recent_topics);
+                    let raw_extracted = llm::five_min_extract(&model, &combined_text, &recent_topics);
+                    // ── Gemma4 validation pass: filter noise, fix garbled labels ──
+                    let extracted = llm::validate_extraction(&raw_extracted);
                     let timestamp_now = Utc::now().to_rfc3339();
                     let ah = extract_worker_app.clone();
 
@@ -814,6 +836,8 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                         };
                         if let Ok(conn) = open_db() {
                             let _ = db::insert_live_note(&conn, &live_note);
+                            // Auto-trigger batch analysis after 5 new notes
+                            increment_idle_note_counter();
                         }
 
                         // ── Tasks: candidate extraction -> RAG -> LLM approval -> pending suggestions ──
@@ -851,6 +875,9 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                                                 t["project"].as_str(),
                                             ),
                                             created_at: Utc::now().to_rfc3339(),
+                                            mentions_count: 1,
+                                            last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                                            sentiment: "neutral".to_string(),
                                         };
                                         let _ = db::insert_node(&conn, &node);
                                         if let Ok(conn) = open_db() {
@@ -878,6 +905,9 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                                                         t["project"].as_str(),
                                                     ),
                                                     created_at: Utc::now().to_rfc3339(),
+                                                    mentions_count: 1,
+                                                    last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                                                    sentiment: "neutral".to_string(),
                                                 };
                                                 let _ = db::insert_node(&conn, &node);
                                             }
@@ -920,6 +950,9 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                                                     g["description"].as_str(),
                                                 ),
                                                 created_at: Utc::now().to_rfc3339(),
+                                                mentions_count: 1,
+                                                last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                                                sentiment: "neutral".to_string(),
                                             };
                                             let _ = db::insert_node(&conn, &node);
                                         }
@@ -961,6 +994,9 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                                                     )
                                                 },
                                                 created_at: Utc::now().to_rfc3339(),
+                                                mentions_count: 1,
+                                                last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                                                sentiment: "neutral".to_string(),
                                             };
                                             let _ = db::insert_node(&conn, &node);
                                         }
@@ -1003,6 +1039,9 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                                             label: name,
                                             data: node_metadata_json(category, None, None, impact, None),
                                             created_at: Utc::now().to_rfc3339(),
+                                            mentions_count: 1,
+                                            last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                                            sentiment: "neutral".to_string(),
                                         };
                                         let _ = db::insert_node(&conn, &node);
                                     }
@@ -1036,6 +1075,9 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                                             label: name.to_string(),
                                             data: node_metadata_json(topic["category"].as_str(), None, None, impact, None),
                                             created_at: Utc::now().to_rfc3339(),
+                                            mentions_count: 1,
+                                            last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                                            sentiment: "neutral".to_string(),
                                         };
                                         let _ = db::insert_node(&conn, &node);
                                     }
@@ -1164,6 +1206,42 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                         // It is batched every 4 hours (or on manual refresh) by
                         // run_batch_analysis(), which processes only unread notes and
                         // deduplicates against today's existing suggestions.
+
+                        // ── Connect self node to all top-level entities ───────
+                        // self → project/goal  (part_of)  — you own these work streams
+                        // self → person        (involves) — you know / work with these people
+                        if let Ok(conn) = open_db() {
+                            let _ = db::ensure_self_node(&conn);
+                            for label in project_labels.iter().chain(goal_labels.iter()) {
+                                let ntype = if goal_labels.contains(label) { "goal" } else { "project" };
+                                if let Some(node_id) = resolve_existing_node_id(&conn, ntype, label) {
+                                    let edge_id = format!("self-you__{}", node_id);
+                                    let edge = db::GraphEdge {
+                                        id: edge_id,
+                                        from_node: "self-you".to_string(),
+                                        to_node: node_id,
+                                        edge_type: "part_of".to_string(),
+                                        weight: 1.0,
+                                        last_updated: Utc::now().to_rfc3339(),
+                                    };
+                                    let _ = db::insert_edge_ignore_dup(&conn, &edge);
+                                }
+                            }
+                            for label in person_labels.iter() {
+                                if let Some(node_id) = resolve_existing_node_id(&conn, "person", label) {
+                                    let edge_id = format!("self-you__person__{}", node_id);
+                                    let edge = db::GraphEdge {
+                                        id: edge_id,
+                                        from_node: "self-you".to_string(),
+                                        to_node: node_id,
+                                        edge_type: "involves".to_string(),
+                                        weight: 1.0,
+                                        last_updated: Utc::now().to_rfc3339(),
+                                    };
+                                    let _ = db::insert_edge_ignore_dup(&conn, &edge);
+                                }
+                            }
+                        }
 
                         let _ = ah.emit("five-min-extract-done", extracted);
                         let _ = ah.emit("live-notes-updated", ());
@@ -1304,7 +1382,7 @@ fn start_listening(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> 
                             let word_count = block.combined_text.split_whitespace().count();
                             if word_count >= 10 {
                                 let job = (
-                                    llm_model_clone.lock().unwrap().clone(),
+                                    llm::BATCH_MODEL.to_string(),
                                     block.combined_text,
                                     block.started_at_rfc3339,
                                 );
@@ -1467,7 +1545,6 @@ fn end_meeting(state: tauri::State<'_, AppState>) -> String {
         None => return "No active meeting".to_string(),
     };
     let transcript = state.session_transcript.lock().unwrap().clone();
-    let model = state.llm_model.lock().unwrap().clone();
     let mid_clone = mid.clone();
     std::thread::spawn(move || {
         if let Ok(conn) = open_db() {
@@ -1475,7 +1552,7 @@ fn end_meeting(state: tauri::State<'_, AppState>) -> String {
                 if let Some(m) = meetings.iter().find(|m| m.id == mid_clone) {
                     let person = m.person.as_deref().unwrap_or("Unknown").to_string();
                     let topic = m.title.clone();
-                    let json = llm::meeting_summary(&model, &transcript, &person, &topic);
+                    let json = llm::meeting_summary(llm::BATCH_MODEL, &transcript, &person, &topic);
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
                         let summary = parsed["summary"].as_str().unwrap_or("").to_string();
                         let action_items = serde_json::to_string(&parsed["action_items"]).unwrap_or_default();
@@ -1856,6 +1933,27 @@ fn update_suggestion_status(id: String, status: String) -> bool {
     }
 }
 
+/// Wipe all intelligence tables (graph, notes, fog, tasks, goals, suggestions, transcripts).
+/// Keeps settings intact. Used for a clean slate / debug reset.
+#[tauri::command]
+fn clear_database() -> bool {
+    match open_db() {
+        Ok(conn) => conn.execute_batch(
+            "DELETE FROM graph_nodes;
+             DELETE FROM graph_edges;
+             DELETE FROM live_notes;
+             DELETE FROM historical_notes;
+             DELETE FROM fog_entries;
+             DELETE FROM fog_entries_extended;
+             DELETE FROM tasks;
+             DELETE FROM goals;
+             DELETE FROM suggestions;
+             DELETE FROM transcript_chunks;"
+        ).is_ok(),
+        Err(_) => false,
+    }
+}
+
 // ── Mental Map Graph Data ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1910,6 +2008,9 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
         Err(_) => return (0, 0),
     };
 
+    // Persist invocation time so the UI countdown survives app restarts.
+    let _ = db::set_setting(&conn, "last_batch_ran_at", &Utc::now().to_rfc3339());
+
     let notes = match db::get_unprocessed_notes_for_today(&conn) {
         Ok(n) => n,
         Err(_) => return (0, 0),
@@ -1938,7 +2039,9 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
     let recent_topics = db::get_last_active_topics(&conn)
         .unwrap_or_default()
         .join(", ");
-    let extracted = llm::five_min_extract(model, &combined, &recent_topics);
+    let raw_extracted = llm::five_min_extract(model, &combined, &recent_topics);
+    // ── Gemma4 validation pass: filter noise, fix garbled labels ──
+    let extracted = llm::validate_extraction(&raw_extracted);
 
     // Do not mark notes processed when extraction fails (e.g. Ollama offline).
     match serde_json::from_str::<serde_json::Value>(&extracted) {
@@ -2020,6 +2123,9 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
                                 )
                             },
                             created_at: Utc::now().to_rfc3339(),
+                            mentions_count: 1,
+                            last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                            sentiment: "neutral".to_string(),
                         };
                         let _ = db::insert_node(&conn, &goal_node);
                     }
@@ -2052,6 +2158,9 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
                                 node_metadata_json(Some("Social"), None, None, impact, p["context"].as_str())
                             },
                             created_at: Utc::now().to_rfc3339(),
+                            mentions_count: 1,
+                            last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                            sentiment: "neutral".to_string(),
                         };
                         let _ = db::insert_node(&conn, &node);
                     }
@@ -2091,6 +2200,9 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
                         label: name,
                         data: node_metadata_json(category, None, None, impact, None),
                         created_at: Utc::now().to_rfc3339(),
+                        mentions_count: 1,
+                        last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                        sentiment: "neutral".to_string(),
                     };
                     let _ = db::insert_node(&conn, &node);
                 }
@@ -2124,6 +2236,9 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
                         label: name.to_string(),
                         data: node_metadata_json(topic["category"].as_str(), None, None, impact, None),
                         created_at: Utc::now().to_rfc3339(),
+                        mentions_count: 1,
+                        last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                        sentiment: "neutral".to_string(),
                     };
                     let _ = db::insert_node(&conn, &node);
                 }
@@ -2161,6 +2276,9 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
                                 t["project"].as_str(),
                             ),
                             created_at: Utc::now().to_rfc3339(),
+                            mentions_count: 1,
+                            last_mentioned_at: Some(Utc::now().to_rfc3339()),
+                            sentiment: "neutral".to_string(),
                         };
                         let _ = db::insert_node(&conn, &node);
                     }
@@ -2263,6 +2381,40 @@ fn run_batch_analysis(model: &str) -> (usize, usize) {
                         candidate_tasks.push(title.to_string());
                     }
                 }
+            }
+        }
+
+        // ── Connect self node to all top-level entities ───────────────────────
+        // self → project/goal  (part_of)  — you own these work streams
+        // self → person        (involves) — you know / work with these people
+        let _ = db::ensure_self_node(&conn);
+        for label in project_labels.iter().chain(goal_labels.iter()) {
+            let node_type = if goal_labels.contains(label) { "goal" } else { "project" };
+            if let Some(node_id) = resolve_existing_node_id(&conn, node_type, label) {
+                let edge_id = format!("self-you__{}", node_id);
+                let edge = db::GraphEdge {
+                    id: edge_id,
+                    from_node: "self-you".to_string(),
+                    to_node: node_id,
+                    edge_type: "part_of".to_string(),
+                    weight: 1.0,
+                    last_updated: Utc::now().to_rfc3339(),
+                };
+                let _ = db::insert_edge_ignore_dup(&conn, &edge);
+            }
+        }
+        for label in person_labels.iter() {
+            if let Some(node_id) = resolve_existing_node_id(&conn, "person", label) {
+                let edge_id = format!("self-you__person__{}", node_id);
+                let edge = db::GraphEdge {
+                    id: edge_id,
+                    from_node: "self-you".to_string(),
+                    to_node: node_id,
+                    edge_type: "involves".to_string(),
+                    weight: 1.0,
+                    last_updated: Utc::now().to_rfc3339(),
+                };
+                let _ = db::insert_edge_ignore_dup(&conn, &edge);
             }
         }
     }
@@ -2388,12 +2540,8 @@ fn start_decay_jobs() {
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let model = open_db()
-                    .ok()
-                    .and_then(|conn| db::get_setting(&conn, "llm_model"))
-                    .unwrap_or_else(|| "qwen3.5:9b".to_string());
                 let (notes, suggestions) = tokio::task::spawn_blocking(move || {
-                    run_batch_analysis(&model)
+                    run_batch_analysis(llm::BATCH_MODEL)
                 })
                 .await
                 .unwrap_or((0, 0));
@@ -2403,6 +2551,47 @@ fn start_decay_jobs() {
             }
         })
     });
+
+    // ── 10-minute idle batch trigger ──────────────────────────────────────────
+    // Checks every 10 minutes; if there are unprocessed notes in the DB, runs
+    // batch analysis. Reads directly from the DB so no shared counter is needed
+    // and this correctly fires even after app restarts.
+    std::thread::spawn(|| {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                let unprocessed = open_db()
+                    .ok()
+                    .and_then(|conn| db::get_unprocessed_notes_for_today(&conn).ok())
+                    .map(|notes| notes.len())
+                    .unwrap_or(0);
+                if unprocessed > 0 {
+                    let _ = tokio::task::spawn_blocking(move || run_batch_analysis(llm::BATCH_MODEL)).await;
+                    eprintln!("[nodemind] 10-min idle batch triggered for {} unprocessed notes", unprocessed);
+                }
+            }
+        })
+    });
+}
+
+/// Increment the idle-trigger counter. Called after each live note is saved during recording.
+/// This is a simple non-AppState mechanism so it works from spawn_blocking contexts.
+fn increment_idle_note_counter() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // This accesses the same static inside start_decay_jobs via a separate exported wrapper.
+    // For simplicity we store a process-global counter here.
+    static GLOBAL_NOTE_COUNTER: AtomicU32 = AtomicU32::new(0);
+    let prev = GLOBAL_NOTE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    if prev + 1 >= 5 {
+        GLOBAL_NOTE_COUNTER.store(0, Ordering::Relaxed);
+        // Trigger batch asynchronously
+        std::thread::spawn(|| {
+            run_batch_analysis(llm::BATCH_MODEL);
+            eprintln!("[nodemind] Auto-triggered batch after 5 new notes");
+        });
+    }
 }
 
 /// Calculate next Sunday at 02:00 AM UTC.
@@ -2441,8 +2630,8 @@ async fn refresh_suggestions(state: tauri::State<'_, AppState>, app: tauri::AppH
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e)?;
-    let model = state.llm_model.lock().unwrap().clone();
-    let (notes, added) = tokio::task::spawn_blocking(move || run_batch_analysis(&model))
+    let _ = state; // unused, batch always uses BATCH_MODEL
+    let (notes, added) = tokio::task::spawn_blocking(|| run_batch_analysis(llm::BATCH_MODEL))
         .await
         .map_err(|e| e.to_string())?;
     let _ = app.emit("suggestions-updated", ());
@@ -2457,8 +2646,8 @@ async fn refresh_mental_map(state: tauri::State<'_, AppState>, app: tauri::AppHa
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e)?;
-    let model = state.llm_model.lock().unwrap().clone();
-    let (notes, _) = tokio::task::spawn_blocking(move || run_batch_analysis(&model))
+    let _ = state; // unused, batch always uses BATCH_MODEL
+    let (notes, _) = tokio::task::spawn_blocking(|| run_batch_analysis(llm::BATCH_MODEL))
         .await
         .map_err(|e| e.to_string())?;
     let _ = app.emit("mental-map-updated", ());
@@ -2466,10 +2655,197 @@ async fn refresh_mental_map(state: tauri::State<'_, AppState>, app: tauri::AppHa
     Ok(format!("Mental map updated from {} new notes", notes))
 }
 
+#[tauri::command]
+async fn get_drift_alerts() -> Result<Vec<serde_json::Value>, String> {
+    let conn = open_db().map_err(|e| e.to_string())?;
+    let nodes = db::get_nodes(&conn).map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let threshold = chrono::Duration::days(7);
+
+    let alerts: Vec<serde_json::Value> = nodes
+        .into_iter()
+        .filter(|n| n.node_type == "goal")
+        .filter_map(|n| {
+            let last_ts = n.last_mentioned_at.as_deref().unwrap_or(&n.created_at);
+            let last_dt = chrono::DateTime::parse_from_rfc3339(last_ts).ok()?;
+            let days_idle = (now - last_dt.with_timezone(&Utc)).num_days();
+            if days_idle >= 7 {
+                let drift_score = (days_idle as f64 / 30.0).clamp(0.0, 1.0);
+                Some(serde_json::json!({
+                    "goal": n.label,
+                    "goal_id": n.id,
+                    "days_since_mentioned": days_idle,
+                    "drift_score": drift_score
+                }))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(alerts)
+}
+
+#[tauri::command]
+async fn get_momentum_scores() -> Result<serde_json::Value, String> {
+    let conn = open_db().map_err(|e| e.to_string())?;
+    let scores = graph::compute_all_momentum_scores(&conn);
+    let map: serde_json::Map<String, serde_json::Value> = scores
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::from(v)))
+        .collect();
+    Ok(serde_json::Value::Object(map))
+}
+
+/// Returns when the last batch ran and how many seconds until the next one.
+/// `last_batch_ran_at` is persisted in the DB, so it survives app restarts.
+/// On re-open the countdown picks up from where it left off; the startup
+/// catch-up batch (run_batch_analysis on launch) also resets this timestamp.
+#[tauri::command]
+fn get_batch_schedule() -> serde_json::Value {
+    let last_ran_at = open_db()
+        .ok()
+        .and_then(|conn| db::get_setting(&conn, "last_batch_ran_at"))
+        .unwrap_or_default();
+
+    let batch_interval_secs: i64 = 4 * 3600;
+
+    let (seconds_until_next, last_ran_ago_secs) = if last_ran_at.is_empty() {
+        (0i64, -1i64)
+    } else {
+        match DateTime::parse_from_rfc3339(&last_ran_at) {
+            Ok(last_dt) => {
+                let elapsed = (Utc::now() - last_dt.with_timezone(&Utc)).num_seconds();
+                let remaining = (batch_interval_secs - elapsed).max(0);
+                (remaining, elapsed)
+            }
+            Err(_) => (0, -1),
+        }
+    };
+
+    let is_overdue = !last_ran_at.is_empty() && seconds_until_next == 0;
+
+    serde_json::json!({
+        "last_ran_at": last_ran_at,
+        "seconds_until_next": seconds_until_next,
+        "last_ran_ago_secs": last_ran_ago_secs,
+        "is_overdue": is_overdue,
+        "batch_interval_secs": batch_interval_secs,
+    })
+}
+
+#[tauri::command]
+async fn get_recent_people_cmd() -> Result<Vec<serde_json::Value>, String> {
+    let conn = open_db().map_err(|e| e.to_string())?;
+    let nodes = db::get_nodes(&conn).map_err(|e| e.to_string())?;
+    let mut people: Vec<_> = nodes
+        .into_iter()
+        .filter(|n| n.node_type == "person")
+        .collect();
+    // Sort by last_mentioned_at descending, fallback to created_at
+    people.sort_by(|a, b| {
+        let a_ts = a.last_mentioned_at.as_deref().unwrap_or(&a.created_at);
+        let b_ts = b.last_mentioned_at.as_deref().unwrap_or(&b.created_at);
+        b_ts.cmp(a_ts)
+    });
+    let result: Vec<serde_json::Value> = people
+        .into_iter()
+        .take(6)
+        .map(|n| serde_json::json!({
+            "id": n.id,
+            "label": n.label,
+            "node_type": n.node_type,
+            "mentions_count": n.mentions_count,
+            "last_mentioned_at": n.last_mentioned_at,
+            "created_at": n.created_at
+        }))
+        .collect();
+    Ok(result)
+}
+
+#[tauri::command]
+async fn get_node_related_notes(node_id: String) -> Result<Vec<String>, String> {
+    let conn = open_db().map_err(|e| e.to_string())?;
+    // Get the label from the node so we can search notes for it
+    let nodes = db::get_nodes(&conn).map_err(|e| e.to_string())?;
+    let label = nodes
+        .iter()
+        .find(|n| n.id == node_id)
+        .map(|n| n.label.to_lowercase())
+        .unwrap_or_default();
+    if label.is_empty() {
+        return Ok(vec![]);
+    }
+    // Search live notes summaries for mention of the label
+    let notes = db::get_all_live_notes(&conn).map_err(|e| e.to_string())?;
+    let matches: Vec<String> = notes
+        .into_iter()
+        .filter(|n| n.summary.to_lowercase().contains(&label))
+        .take(10)
+        .map(|n| n.summary)
+        .collect();
+    Ok(matches)
+}
+
+#[tauri::command]
+async fn archive_node(node_id: String) -> Result<(), String> {
+    let conn = open_db().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE graph_nodes SET data = json_set(COALESCE(data, '{}'), '$.archived', 1) WHERE id = ?1",
+        rusqlite::params![node_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn mark_node_as_goal(node_id: String) -> Result<(), String> {
+    let conn = open_db().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE graph_nodes SET node_type = 'goal' WHERE id = ?1",
+        rusqlite::params![node_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_graph_node(node_id: String, new_label: String) -> Result<(), String> {
+    let new_label = new_label.trim().to_string();
+    if new_label.is_empty() {
+        return Err("Label cannot be empty".to_string());
+    }
+    let conn = open_db().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE graph_nodes SET label = ?1 WHERE id = ?2",
+        rusqlite::params![new_label, node_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Ask Gemma to explain a concept using real context from today's session.
+/// Returns a short plain-text insight (1-2 sentences, informal tone).
+#[tauri::command]
+async fn ask_gemma_tooltip(concept: String, context: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let prompt = format!(
+            "Explain in 1-2 casual sentences what \"{concept}\" means in the context of a personal AI assistant that listens to voice notes. Keep it under 30 words. Be direct, no fluff.\nContext: {context}\nExplain:",
+        );
+        llm::ollama_complete(llm::REALTIME_MODEL, &prompt)
+            .map(|s| s.trim().to_string())
+            .map_err(|e| e)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     if let Ok(conn) = open_db() {
         let _ = init_schema(&conn);
         let _ = db::archive_previous_live_notes(&conn);
+        // Seed the central "You" node — first run or after a clear_database.
+        let _ = db::ensure_self_node(&conn);
     }
 
     // Start background maintenance jobs
@@ -2495,6 +2871,8 @@ fn main() {
             last_ollama_warning_ts: Arc::new(Mutex::new(0)),
             last_ollama_autostart_ts: Arc::new(Mutex::new(0)),
             thought_buffer: ThoughtBlockBuffer::default(),
+            unprocessed_note_count: Arc::new(Mutex::new(0)),
+            is_recording: Arc::new(AtomicBool::new(false)),
         })
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -2545,17 +2923,11 @@ fn main() {
 
             // On app launch, immediately process any pending live notes so
             // suggestions and map state catch up without waiting for the 4h job.
-            let startup_model = app
-                .state::<AppState>()
-                .llm_model
-                .lock()
-                .map(|m| m.clone())
-                .unwrap_or_else(|_| "qwen3.5:9b".to_string());
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let result = tokio::task::spawn_blocking(move || -> Result<(usize, usize), String> {
                     llm::ensure_ollama_running()?;
-                    Ok(run_batch_analysis(&startup_model))
+                    Ok(run_batch_analysis(llm::BATCH_MODEL))
                 })
                 .await;
 
@@ -2622,8 +2994,17 @@ fn main() {
             update_suggestion_status,
             get_graph_nodes,
             get_graph_edges,
+            clear_database,
             refresh_suggestions,
-            refresh_mental_map,
+            get_drift_alerts,
+            get_momentum_scores,
+            get_recent_people_cmd,
+            get_node_related_notes,
+            archive_node,
+            mark_node_as_goal,
+            rename_graph_node,
+            ask_gemma_tooltip,
+            get_batch_schedule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

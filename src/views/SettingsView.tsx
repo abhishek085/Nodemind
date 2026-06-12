@@ -5,6 +5,7 @@ export default function SettingsView() {
   const [ollamaStatus, setOllamaStatus] = useState<{
     available: boolean;
     models: string[];
+    running_models?: string[];
   } | null>(null);
   const [llmModel, setLlmModelState] = useState("qwen3.5:9b");
   const [checking, setChecking] = useState(false);
@@ -17,7 +18,7 @@ export default function SettingsView() {
   const checkOllama = async () => {
     setChecking(true);
     try {
-      const res: { available: boolean; models: string[] } = await invoke(
+      const res: { available: boolean; models: string[]; running_models?: string[] } = await invoke(
         "check_ollama_status",
       );
       setOllamaStatus(res);
@@ -199,6 +200,38 @@ export default function SettingsView() {
           </div>
         </div>
 
+        {/* Dual-model pipeline status */}
+        <div className="settings-row">
+          <div className="settings-label">Pipeline models</div>
+          <div className="settings-value" style={{ flexDirection: "column", alignItems: "flex-start", gap: "6px" }}>
+            {(["qwen3.5:9b", "gemma4:e4b"] as const).map((model) => {
+              const role = model === "qwen3.5:9b" ? "Batch (extraction, summaries)" : "Realtime (fog, live tagging)";
+              const loaded = (ollamaStatus?.running_models ?? []).some((m) => m.includes(model.split(":")[0]));
+              const installed = (ollamaStatus?.models ?? []).some((m) => m.includes(model.split(":")[0]));
+              return (
+                <div key={model} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: loaded ? "#34d399" : installed ? "#fbbf24" : "#f87171",
+                      boxShadow: loaded ? "0 0 5px #34d399" : "none",
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span className="code-inline">{model}</span>
+                  <span className="hint-text">
+                    {role} —{" "}
+                    {loaded ? "running" : installed ? "installed, not loaded" : "not installed — run: ollama pull " + model}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {!ollamaStatus?.available && (
           <div className="settings-notice">
             <strong>To enable LLM features:</strong>
@@ -211,8 +244,12 @@ export default function SettingsView() {
                 Start it: <span className="code-inline">ollama serve</span>
               </li>
               <li>
-                Pull a model:{" "}
-                <span className="code-inline">ollama pull llama3</span>
+                Pull the batch model:{" "}
+                <span className="code-inline">ollama pull qwen3.5:9b</span>
+              </li>
+              <li>
+                Pull the realtime model:{" "}
+                <span className="code-inline">ollama pull gemma4:e4b</span>
               </li>
             </ol>
           </div>

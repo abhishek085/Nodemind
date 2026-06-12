@@ -69,6 +69,36 @@ pub struct Prompts {
     pub five_min_extract: FiveMinExtractPrompts,
     pub task_rag_judge: TaskRagJudgePrompts,
     pub goal_horizon_classifier: GoalHorizonClassifierPrompts,
+    pub batch_entity_extract: BatchEntityExtractPrompts,
+    pub drift_analysis: DriftAnalysisPrompts,
+    pub realtime_fog: RealtimeFogPrompts,
+    pub contradiction_surface: ContradictionSurfacePrompts,
+    pub extraction_validator: ExtractionValidatorPrompts,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct BatchEntityExtractPrompts {
+    pub template: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DriftAnalysisPrompts {
+    pub template: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RealtimeFogPrompts {
+    pub template: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ContradictionSurfacePrompts {
+    pub template: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ExtractionValidatorPrompts {
+    pub template: String,
 }
 
 /// Returns the loaded prompts, initialising from the embedded default if needed.

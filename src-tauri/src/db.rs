@@ -81,10 +81,17 @@ pub struct FogEntry {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GraphNode {
     pub id: String,
-    pub node_type: String, // "person" | "project" | "goal" | "topic" | "fog_pattern" | "task"
+    /// "person" | "project" | "goal" | "topic" | "fog_pattern" | "task" | "self" | "idea" | "fog"
+    pub node_type: String,
     pub label: String,
     pub data: Option<String>, // JSON metadata
     pub created_at: String,
+    /// Times this entity has been mentioned (incremented by batch analysis)
+    pub mentions_count: i64,
+    /// ISO-8601 timestamp of the most recent mention
+    pub last_mentioned_at: Option<String>,
+    /// "positive" | "neutral" | "negative"
+    pub sentiment: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -92,7 +99,9 @@ pub struct GraphEdge {
     pub id: String,
     pub from_node: String,
     pub to_node: String,
-    pub edge_type: String, // "blocks" | "relates_to" | "works_with" | "mentions" | "triggers"
+    /// "blocks" | "relates_to" | "works_with" | "mentions" | "triggers"
+    /// | "related_to" | "part_of" | "involves" | "blocked_by"
+    pub edge_type: String,
     pub weight: f64,
     pub last_updated: String,
 }
@@ -110,50 +119,51 @@ fn migrate_graph_schema_if_needed(conn: &Connection) -> Result<()> {
     let nodes_sql = get_table_sql(conn, "graph_nodes").unwrap_or_default().to_lowercase();
     let edges_sql = get_table_sql(conn, "graph_edges").unwrap_or_default().to_lowercase();
 
-    let nodes_ready = nodes_sql.contains("'task'") || nodes_sql.is_empty();
-    let edges_ready = edges_sql.contains("'triggers'") || edges_sql.is_empty();
-    if nodes_ready && edges_ready {
-        return Ok(());
+    // Rebuild only if old schema still has hard CHECK constraints we need to drop
+    let needs_node_rebuild = nodes_sql.contains("check") && !nodes_sql.contains("mentions_count");
+    let needs_edge_rebuild = edges_sql.contains("check") && !edges_sql.contains("related_to");
+
+    if needs_node_rebuild || needs_edge_rebuild {
+        conn.execute_batch(
+            "
+            PRAGMA foreign_keys=OFF;
+
+            ALTER TABLE graph_edges RENAME TO graph_edges_old;
+            ALTER TABLE graph_nodes RENAME TO graph_nodes_old;
+
+            CREATE TABLE graph_nodes (
+                id TEXT PRIMARY KEY,
+                node_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                data TEXT,
+                created_at TEXT NOT NULL,
+                mentions_count INTEGER NOT NULL DEFAULT 0,
+                last_mentioned_at TEXT,
+                sentiment TEXT NOT NULL DEFAULT 'neutral'
+            );
+
+            CREATE TABLE graph_edges (
+                id TEXT PRIMARY KEY,
+                from_node TEXT NOT NULL,
+                to_node TEXT NOT NULL,
+                edge_type TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 1.0,
+                last_updated TEXT NOT NULL
+            );
+
+            INSERT INTO graph_nodes (id,node_type,label,data,created_at)
+            SELECT id,node_type,label,data,created_at FROM graph_nodes_old;
+
+            INSERT INTO graph_edges (id,from_node,to_node,edge_type,weight,last_updated)
+            SELECT id,from_node,to_node,edge_type,weight,last_updated FROM graph_edges_old;
+
+            DROP TABLE graph_edges_old;
+            DROP TABLE graph_nodes_old;
+
+            PRAGMA foreign_keys=ON;
+            ",
+        )?;
     }
-
-    conn.execute_batch(
-        "
-        PRAGMA foreign_keys=OFF;
-
-        ALTER TABLE graph_edges RENAME TO graph_edges_old;
-        ALTER TABLE graph_nodes RENAME TO graph_nodes_old;
-
-        CREATE TABLE graph_nodes (
-            id TEXT PRIMARY KEY,
-            node_type TEXT NOT NULL CHECK(node_type IN ('person','project','goal','topic','fog_pattern','task')),
-            label TEXT NOT NULL,
-            data TEXT,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE graph_edges (
-            id TEXT PRIMARY KEY,
-            from_node TEXT NOT NULL,
-            to_node TEXT NOT NULL,
-            edge_type TEXT NOT NULL CHECK(edge_type IN ('blocks','relates_to','works_with','mentions','triggers')),
-            weight REAL NOT NULL DEFAULT 1.0,
-            last_updated TEXT NOT NULL,
-            FOREIGN KEY(from_node) REFERENCES graph_nodes(id),
-            FOREIGN KEY(to_node) REFERENCES graph_nodes(id)
-        );
-
-        INSERT INTO graph_nodes (id,node_type,label,data,created_at)
-        SELECT id,node_type,label,data,created_at FROM graph_nodes_old;
-
-        INSERT INTO graph_edges (id,from_node,to_node,edge_type,weight,last_updated)
-        SELECT id,from_node,to_node,edge_type,weight,last_updated FROM graph_edges_old;
-
-        DROP TABLE graph_edges_old;
-        DROP TABLE graph_nodes_old;
-
-        PRAGMA foreign_keys=ON;
-        ",
-    )?;
 
     Ok(())
 }
@@ -269,21 +279,22 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 
         CREATE TABLE IF NOT EXISTS graph_nodes (
             id TEXT PRIMARY KEY,
-            node_type TEXT NOT NULL CHECK(node_type IN ('person','project','goal','topic','fog_pattern','task')),
+            node_type TEXT NOT NULL,
             label TEXT NOT NULL,
             data TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            mentions_count INTEGER NOT NULL DEFAULT 0,
+            last_mentioned_at TEXT,
+            sentiment TEXT NOT NULL DEFAULT 'neutral'
         );
 
         CREATE TABLE IF NOT EXISTS graph_edges (
             id TEXT PRIMARY KEY,
             from_node TEXT NOT NULL,
             to_node TEXT NOT NULL,
-            edge_type TEXT NOT NULL CHECK(edge_type IN ('blocks','relates_to','works_with','mentions','triggers')),
+            edge_type TEXT NOT NULL,
             weight REAL NOT NULL DEFAULT 1.0,
-            last_updated TEXT NOT NULL,
-            FOREIGN KEY(from_node) REFERENCES graph_nodes(id),
-            FOREIGN KEY(to_node) REFERENCES graph_nodes(id)
+            last_updated TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -351,6 +362,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE goals ADD COLUMN horizon TEXT NOT NULL DEFAULT 'milestone'", []);
     // Track which live notes have been processed by the batch analysis job.
     let _ = conn.execute("ALTER TABLE live_notes ADD COLUMN processed_at TEXT", []);
+    // New columns for graph nodes (v2 upgrade — silently ignored if already present)
+    let _ = conn.execute("ALTER TABLE graph_nodes ADD COLUMN mentions_count INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE graph_nodes ADD COLUMN last_mentioned_at TEXT", []);
+    let _ = conn.execute("ALTER TABLE graph_nodes ADD COLUMN sentiment TEXT NOT NULL DEFAULT 'neutral'", []);
     let _ = migrate_graph_schema_if_needed(conn);
 
     Ok(())
@@ -700,6 +715,27 @@ pub fn delete_live_notes_for_day(conn: &Connection, day_key: &str) -> Result<()>
     Ok(())
 }
 
+pub fn get_all_live_notes(conn: &Connection) -> Result<Vec<LiveNote>> {
+    let mut stmt = conn.prepare(
+        "SELECT id,day_key,window_started_at,window_ended_at,summary,highlights,ideas,tasks,fingerprint,created_at FROM live_notes ORDER BY created_at DESC LIMIT 200"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LiveNote {
+            id: row.get(0)?,
+            day_key: row.get(1)?,
+            window_started_at: row.get(2)?,
+            window_ended_at: row.get(3)?,
+            summary: row.get(4)?,
+            highlights: parse_json_string_list(row.get(5)?),
+            ideas: parse_json_string_list(row.get(6)?),
+            tasks: parse_json_string_list(row.get(7)?),
+            fingerprint: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    })?;
+    rows.collect()
+}
+
 pub fn archive_previous_live_notes(conn: &Connection) -> Result<usize> {
     let today = local_today_key();
     let mut stmt = conn.prepare(
@@ -810,15 +846,39 @@ pub fn insert_extractor_debug_run(
 
 pub fn insert_node(conn: &Connection, node: &GraphNode) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO graph_nodes (id,node_type,label,data,created_at) VALUES (?1,?2,?3,?4,?5)",
-        params![node.id, node.node_type, node.label, node.data, node.created_at],
+        "INSERT OR REPLACE INTO graph_nodes (id,node_type,label,data,created_at,mentions_count,last_mentioned_at,sentiment) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![node.id, node.node_type, node.label, node.data, node.created_at, node.mentions_count, node.last_mentioned_at, node.sentiment],
+    )?;
+    Ok(())
+}
+
+/// Insert the central "You" self node if it does not already exist.
+/// Uses INSERT OR IGNORE so existing data (e.g. mentions_count) is never reset.
+pub fn ensure_self_node(conn: &Connection) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR IGNORE INTO graph_nodes (id,node_type,label,data,created_at,mentions_count,last_mentioned_at,sentiment) VALUES ('self-you','self','You','{}',?1,1,?1,'neutral')",
+        params![now],
+    )?;
+    Ok(())
+}
+
+/// Insert an edge only if no edge with this id already exists.
+/// Used for deterministic ids (e.g. "self-you__<node_id>") to avoid duplicates
+/// without running a SELECT first.
+pub fn insert_edge_ignore_dup(conn: &Connection, edge: &GraphEdge) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO graph_edges (id,from_node,to_node,edge_type,weight,last_updated) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![edge.id, edge.from_node, edge.to_node, edge.edge_type, edge.weight, edge.last_updated],
     )?;
     Ok(())
 }
 
 pub fn get_nodes(conn: &Connection) -> Result<Vec<GraphNode>> {
     let mut stmt = conn.prepare(
-        "SELECT id,node_type,label,data,created_at FROM graph_nodes ORDER BY created_at DESC"
+        "SELECT id,node_type,label,data,created_at,\
+         COALESCE(mentions_count,0),last_mentioned_at,COALESCE(sentiment,'neutral') \
+         FROM graph_nodes ORDER BY created_at DESC"
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(GraphNode {
@@ -827,6 +887,49 @@ pub fn get_nodes(conn: &Connection) -> Result<Vec<GraphNode>> {
             label: row.get(2)?,
             data: row.get(3)?,
             created_at: row.get(4)?,
+            mentions_count: row.get(5)?,
+            last_mentioned_at: row.get(6)?,
+            sentiment: row.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Update mention count and last_mentioned_at for a node.
+pub fn touch_node_mention(conn: &Connection, node_id: &str, sentiment: &str) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE graph_nodes SET mentions_count = mentions_count + 1, last_mentioned_at = ?2, sentiment = ?3 WHERE id = ?1",
+        params![node_id, now, sentiment],
+    )?;
+    Ok(())
+}
+
+/// Return fog_entries_extended from the last N hours.
+pub fn get_recent_fog_signals(conn: &Connection, hours: i64) -> Result<Vec<FogEntryExtended>> {
+    get_fog_entries_extended(conn, hours)
+}
+
+/// Return person-type nodes mentioned within the last 48 hours (max 6).
+pub fn get_recent_people(conn: &Connection) -> Result<Vec<GraphNode>> {
+    let cutoff = (Utc::now() - chrono::Duration::hours(48)).to_rfc3339();
+    let mut stmt = conn.prepare(
+        "SELECT id,node_type,label,data,created_at,\
+         COALESCE(mentions_count,0),last_mentioned_at,COALESCE(sentiment,'neutral') \
+         FROM graph_nodes \
+         WHERE node_type='person' AND COALESCE(last_mentioned_at, created_at) > ?1 \
+         ORDER BY COALESCE(last_mentioned_at, created_at) DESC LIMIT 6"
+    )?;
+    let rows = stmt.query_map(params![cutoff], |row| {
+        Ok(GraphNode {
+            id: row.get(0)?,
+            node_type: row.get(1)?,
+            label: row.get(2)?,
+            data: row.get(3)?,
+            created_at: row.get(4)?,
+            mentions_count: row.get(5)?,
+            last_mentioned_at: row.get(6)?,
+            sentiment: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -862,9 +965,20 @@ pub fn decay_edge_weights(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Increment (or create) a numeric field inside a graph node's data JSON.
-/// Used for `mentions_count` (branch fattening) and the leaf-merge `+N` badge.
+/// Increment (or create) a numeric field inside a graph node's data JSON
+/// AND update the dedicated mentions_count column when field == "mentions_count".
 pub fn increment_node_field(conn: &Connection, node_id: &str, field: &str, delta: i64) -> Result<()> {
+    // If it's the mentions_count field, also update the proper column
+    if field == "mentions_count" {
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE graph_nodes SET mentions_count = mentions_count + ?1, last_mentioned_at = ?2 WHERE id = ?3",
+            params![delta, now, node_id],
+        )?;
+        return Ok(());
+    }
+
+    // Otherwise update the JSON data blob
     let existing: Option<String> = conn.query_row(
         "SELECT data FROM graph_nodes WHERE id = ?1",
         params![node_id],

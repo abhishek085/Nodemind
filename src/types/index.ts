@@ -20,10 +20,13 @@ export interface Goal {
 
 export interface GraphNode {
   id: string;
-  node_type: "person" | "project" | "goal" | "topic" | "fog_pattern" | "task";
+  node_type: "person" | "project" | "goal" | "topic" | "fog_pattern" | "task" | "self" | "idea" | "fog";
   label: string;
   data?: string | null;
   created_at: string;
+  mentions_count: number;
+  last_mentioned_at?: string | null;
+  sentiment: string;
 }
 
 export interface GraphEdge {
@@ -98,7 +101,36 @@ export interface HistoricalNote {
   created_at: string;
 }
 
-export type View = "today" | "tasks" | "map" | "meetings" | "fog" | "calendar" | "notes" | "settings";
+export type View = "dashboard" | "graph" | "focus" | "settings";
+
+export type GraphLens = "memory" | "tasks" | "goals" | "week";
+
+export interface DriftAlert {
+  goal: string;
+  goal_id: string;
+  days_since_mentioned: number;
+  drift_score: number;
+}
+
+export interface ExtractionEvent {
+  type: "task" | "goal" | "person" | "topic" | "fog";
+  label: string;
+  timestamp: string;
+}
+
+export interface FogSignal {
+  id: string;
+  text: string;
+  timestamp: string;
+  topic?: string;
+  energy?: string;
+  tag?: string;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
 
 export type ListeningStatus = "off" | "listening" | "idle";
 

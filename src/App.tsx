@@ -2,75 +2,86 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useListening } from "./hooks/useListening";
-import TodayView from "./views/TodayView";
-import TaskListView from "./views/TaskListView";
-import MeetingsView from "./views/MeetingsView";
-import FogView from "./views/FogView";
-import MentalMapView from "./views/MentalMapView";
-import CalendarView from "./views/CalendarView";
-import HistoricalNotesView from "./views/HistoricalNotesView";
+import { useGraphData } from "./hooks/useGraphData";
+import DashboardView from "./views/DashboardView";
+import KnowledgeGraphView from "./views/KnowledgeGraphView";
+import FocusMode from "./views/FocusMode";
 import SettingsView from "./views/SettingsView";
+import Sidebar from "./components/Sidebar";
 import type { View, ActivityItem } from "./types";
 import "./App.css";
 
-const NAV_ITEMS: { id: View; label: string; emoji: string }[] = [
-  { id: "today",    label: "Today",    emoji: "☀️" },
-  { id: "tasks",    label: "Tasks",    emoji: "✅" },
-  { id: "map",      label: "Map",      emoji: "🧠" },
-  { id: "meetings", label: "Meetings", emoji: "🤝" },
-  { id: "fog",      label: "Fog",      emoji: "🌫️" },
-  { id: "calendar", label: "Calendar", emoji: "📅" },
-  { id: "notes",    label: "Notes",    emoji: "🗂️" },
-  { id: "settings", label: "Settings", emoji: "⚙️" },
-];
+// NAV_ITEMS no longer needed — Sidebar component owns the nav definition
+
+// ─── Auto-trigger Focus Mode ──────────────────────────────────────────────────
+function shouldAutoTriggerFocus(): boolean {
+  const now = new Date();
+  const hour = now.getHours();
+  const lastActivity = localStorage.getItem("nodemind_last_activity");
+  const gapHours = lastActivity
+    ? (Date.now() - parseInt(lastActivity)) / 3600000
+    : 99;
+  return hour < 10 || gapHours >= 4;
+}
 
 export default function App() {
-  const [view, setView] = useState<View>("today");
+  const savedView = (localStorage.getItem("nodemind_last_view") as View | null);
+  const [view, setView] = useState<View>(savedView ?? "dashboard");
+  const [showFocus, setShowFocus] = useState(false);
+
   const { status, transcript, language, processingFinalNote, toggleListening, setLanguage, clearTranscript } =
     useListening();
-  // Keep a ref so the tray listener always calls the current toggleListening
-  // without needing to re-register the event subscription on every render.
-  const toggleListeningRef = useRef(toggleListening);
-  useEffect(() => { toggleListeningRef.current = toggleListening; }, [toggleListening]);
+  const { graphData, driftAlerts, momentumScores, recentTasks, refresh: refreshGraph } = useGraphData();
+
+  const [activeFocusProject, setActiveFocusProject] = useState<string | null>(
+    () => localStorage.getItem("nodemind_focus_project")
+  );
+
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
   const [modelLoaded, setModelLoaded] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
-  const [triggerSummarize, setTriggerSummarize] = useState(0);
-  const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
-  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
+  const [, setActivityLog] = useState<ActivityItem[]>([]);
   const lastOllamaAvailableRef = useRef<boolean | null>(null);
-  const autoLoadAttemptedRef = useRef(false);
-  const prevStatusRef = useRef<typeof status>(status);
+  // nodeId to navigate to in graph view - used when navigating from dashboard
+  const [, setGraphNavTarget] = useState<string | undefined>(undefined);
 
-  // Auto-start listening on launch after a brief delay.
-  useEffect(() => {
-    const id = setTimeout(() => {
-      if (status === "off") {
-        toggleListeningRef.current();
-      }
-    }, 1500);
-    return () => clearTimeout(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Persist last view
+  const changeView = (v: View) => {
+    setView(v);
+    localStorage.setItem("nodemind_last_view", v);
+    localStorage.setItem("nodemind_last_activity", String(Date.now()));
+  };
 
-  // Detect when listening stops → auto-run suggestions + map update (#12, #20).
+  // Navigate to a node in the graph (called from Dashboard)
+  const navigateToGraph = (nodeId?: string) => {
+    setGraphNavTarget(nodeId);
+    changeView("graph");
+  };
+
+  // Auto-trigger Focus Mode check
   useEffect(() => {
-    const prev = prevStatusRef.current;
-    prevStatusRef.current = status;
-    if (prev === "listening" && status !== "listening") {
-      invoke("refresh_suggestions").catch(() => {});
-      invoke("refresh_mental_map").catch(() => {});
-      flash("Listening stopped — refreshing suggestions and map…");
+    if (shouldAutoTriggerFocus()) {
+      setShowFocus(true);
     }
-  }, [status]);
+    localStorage.setItem("nodemind_last_activity", String(Date.now()));
+  }, []);
 
-  // Single interval: check Ollama availability, model warm state, and active meeting.
+  // Focus mode: trigger when user clicks nav item
+  const handleFocusNav = () => {
+    setShowFocus(true);
+  };
+
+  const handleStartFocus = (projectLabel: string) => {
+    setActiveFocusProject(projectLabel);
+    localStorage.setItem("nodemind_focus_project", projectLabel);
+  };
+
+  // Check Ollama availability on startup
   useEffect(() => {
-    const poll = async () => {
+    const check = async () => {
       try {
         const res: {
           available: boolean;
-          responding?: boolean;
-          latency_ms?: number;
           autostart_attempted?: boolean;
           autostart_ok?: boolean;
           autostart_error?: string | null;
@@ -79,58 +90,40 @@ export default function App() {
 
         const prev = lastOllamaAvailableRef.current;
         if (prev !== null && prev !== res.available) {
-          flash(
-            res.available
-              ? "✅ Ollama is back online."
-              : "⚠️ Ollama is offline. Trying to start it locally…",
-          );
+          flash(res.available ? "✅ Ollama is back online." : "⚠️ Ollama is offline. Trying to start it locally…");
         }
-
         if (res.autostart_attempted) {
-          flash(
-            res.autostart_ok
-              ? "🚀 Started Ollama in background."
-              : `⚠️ Could not auto-start Ollama: ${String(res.autostart_error ?? "unknown error")}`,
-          );
+          flash(res.autostart_ok ? "🚀 Started Ollama in background." : `⚠️ Could not auto-start Ollama: ${String(res.autostart_error ?? "unknown")}`);
         }
-
         lastOllamaAvailableRef.current = res.available;
       } catch {
         setOllamaOk(false);
-        if (lastOllamaAvailableRef.current !== false) {
-          flash("⚠️ Ollama health check failed. LLM features are offline.");
-        }
+        if (lastOllamaAvailableRef.current !== false) flash("⚠️ Ollama health check failed. LLM features are offline.");
         lastOllamaAvailableRef.current = false;
       }
-
-      try {
-        const ollamaAvailable = lastOllamaAvailableRef.current;
-        const loaded: boolean = await invoke("is_model_loaded");
-        setModelLoaded(loaded);
-        // Auto-load the model once when Ollama first becomes available (#27).
-        if (!loaded && ollamaAvailable && !autoLoadAttemptedRef.current) {
-          autoLoadAttemptedRef.current = true;
-          invoke("load_model_cmd").catch(() => {});
-          flash("Auto-loading LLM model…");
-        }
-      } catch {}
-
-      try {
-        const mid: string | null = await invoke("get_active_meeting");
-        setActiveMeetingId(mid);
-      } catch {}
     };
-
-    poll();
-    const id = setInterval(poll, 6000);
+    check();
+    const id = setInterval(check, 7000);
     return () => clearInterval(id);
   }, []);
 
-  // Update tray icon state whenever listening status changes
+  // Poll model loaded state
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const loaded: boolean = await invoke("is_model_loaded");
+        setModelLoaded(loaded);
+      } catch {}
+    };
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Update tray icon
   useEffect(() => {
     try {
-      const label = status === "listening" ? "Listening" : status === "idle" ? "Idle" : "Off";
-      invoke("update_tray_status", { status: label });
+      invoke("update_tray_status", { status: status === "listening" ? "Listening" : status === "idle" ? "Idle" : "Off" });
     } catch {}
   }, [status]);
 
@@ -138,111 +131,59 @@ export default function App() {
   useEffect(() => {
     const fns: (() => void)[] = [];
     const setup = async () => {
-      fns.push(
-        await listen<string>("command-detected", (e) =>
-          flash(`⌨️  "${e.payload.slice(0, 60)}"`),
-        ),
-      );
-      fns.push(await listen("meeting-started", () => {
-        flash("🤝 Meeting started");
-        invoke<string | null>("get_active_meeting").then((mid) => setActiveMeetingId(mid)).catch(() => {});
-      }));
-      fns.push(
-        await listen("meeting-ended", () => {
-          flash("✅ Meeting ended — generating notes…");
-          setActiveMeetingId(null);
-        }),
-      );
+      fns.push(await listen<string>("command-detected", (e) => flash(`⌨️  "${e.payload.slice(0, 60)}"`)));
+      fns.push(await listen("meeting-started", () => flash("🤝 Meeting started")));
+      fns.push(await listen("meeting-ended", () => flash("✅ Meeting ended — generating notes…")));
       fns.push(await listen("goal-created", () => flash("🎯 Goal saved!")));
       fns.push(await listen("task-created", () => flash("✅ Task saved!")));
-      // Background LLM processing feedback
-      fns.push(
-        await listen<string>("chunk-annotated", (e) => {
-          try {
-            const a = JSON.parse(e.payload);
-            const taskTitles: string[] = (a.tasks ?? []).map((t: { title?: string }) => t.title ?? String(t)).filter(Boolean);
-            const fogSignals: string[] = a.fog_signals ?? [];
-            const topics: string[] = a.topics ?? [];
-            if (taskTitles.length > 0 || fogSignals.length > 0 || topics.length > 0) {
-              const now = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-              setActivityLog((prev) => {
-                // Merge into existing same-minute bucket, deduplicating each field
-                const idx = prev.findIndex((e) => e.time === now);
-                if (idx !== -1) {
-                  const existing = prev[idx];
-                  const merged: ActivityItem = {
-                    time: now,
-                    tasks: [...new Set([...existing.tasks, ...taskTitles])],
-                    fog: [...new Set([...existing.fog, ...fogSignals])],
-                    topics: [...new Set([...existing.topics, ...topics])],
-                  };
-                  const next = [...prev];
-                  next[idx] = merged;
-                  return next;
-                }
-                return [{ time: now, tasks: taskTitles, fog: fogSignals, topics }, ...prev].slice(0, 20);
-              });
-              const parts: string[] = [];
-              if (taskTitles.length > 0) parts.push(`${taskTitles.length} task${taskTitles.length !== 1 ? "s" : ""}`);
-              if (fogSignals.length > 0) parts.push(`${fogSignals.length} fog signal${fogSignals.length !== 1 ? "s" : ""}`);
-              if (parts.length > 0) flash(`🔍 Captured: ${parts.join(", ")}`);
-            }
-          } catch {}
-        }),
-      );
-      fns.push(
-        await listen<string>("command-parsed", (e) => {
-          try {
-            const c = JSON.parse(e.payload);
-            const intent = c.intent ?? "Unknown";
-            if (intent !== "Unknown") flash(`🎯 Command: ${intent}`);
-          } catch {}
-        }),
-      );
-      fns.push(
-        await listen<string>("error", (e) => {
-          flash(`⚠️ ${String(e.payload).slice(0, 80)}`);
-        }),
-      );
-      fns.push(
-        await listen<string>("mental-loop-detected", (e) => {
-          try {
-            const payload = JSON.parse(e.payload);
-            const subject = String(payload.subject ?? "the same topic");
-            flash(`🔁 Loop alert: You may be circling on ${subject}`);
-          } catch {
-            flash("🔁 Loop alert: You may be circling on the same topic");
+      fns.push(await listen("mental-map-updated", () => {
+        flash("🧠 Knowledge graph updated");
+        refreshGraph();
+      }));
+      fns.push(await listen<string>("chunk-annotated", (e) => {
+        try {
+          const a = JSON.parse(e.payload);
+          const taskTitles: string[] = (a.tasks ?? []).map((t: { title?: string }) => t.title ?? String(t)).filter(Boolean);
+          const fogSignals: string[] = a.fog_signals ?? [];
+          const topics: string[] = a.topics ?? [];
+          if (taskTitles.length > 0 || fogSignals.length > 0 || topics.length > 0) {
+            const now = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+            setActivityLog((prev) => {
+              const idx = prev.findIndex((e) => e.time === now);
+              if (idx !== -1) {
+                const existing = prev[idx];
+                const merged: ActivityItem = {
+                  time: now,
+                  tasks: [...new Set([...existing.tasks, ...taskTitles])],
+                  fog: [...new Set([...existing.fog, ...fogSignals])],
+                  topics: [...new Set([...existing.topics, ...topics])],
+                };
+                const next = [...prev];
+                next[idx] = merged;
+                return next;
+              }
+              return [{ time: now, tasks: taskTitles, fog: fogSignals, topics }, ...prev].slice(0, 20);
+            });
           }
-        }),
-      );
-      // Tray menu events
-      fns.push(await listen("tray-toggle-listening", () => toggleListeningRef.current()));
-      fns.push(
-        await listen("tray-summarize", () => {
-          setView("today");
-          setTriggerSummarize((n) => n + 1);
-        }),
-      );
+        } catch {}
+      }));
+      fns.push(await listen<string>("error", (e) => flash(`⚠️ ${String(e.payload).slice(0, 80)}`)));
+      fns.push(await listen("tray-toggle-listening", () => toggleListening()));
     };
     setup();
     return () => fns.forEach((u) => u());
-  }, []);
+  }, [refreshGraph, toggleListening]);
 
   const flash = (msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3500);
   };
 
-  const listeningCls =
-    status === "listening"
-      ? "status-listening"
-      : status === "idle"
-        ? "status-idle"
-        : "status-off";
+  const listeningCls = status === "listening" ? "status-listening" : status === "idle" ? "status-idle" : "status-off";
 
   return (
     <div className="app-shell">
-      {/* ── Titlebar ───────────────────────────────────── */}
+      {/* ── Titlebar ─────────────────────────────────────── */}
       <header className="titlebar">
         <div className="titlebar-brand">
           <img src="/nodemind_icon.svg" alt="Nodemind" className="titlebar-logo" />
@@ -256,49 +197,22 @@ export default function App() {
         </div>
         <div className="titlebar-right">
           {ollamaOk === false && (
-            <span className="badge-warn" title="Ollama not running — LLM features offline">
-              No LLM
-            </span>
+            <span className="badge-warn" title="Ollama not running — LLM features offline">No LLM</span>
           )}
           {ollamaOk === true && (
-            <span
-              className={modelLoaded ? "badge-ok" : "badge-model-cold"}
-              title={modelLoaded ? "LLM model is loaded in memory" : "LLM available but model not yet warmed up — go to Settings to preload it"}
-            >
+            <span className={modelLoaded ? "badge-ok" : "badge-model-cold"} title={modelLoaded ? "LLM model loaded" : "Model not yet warm"}>
               {modelLoaded ? "Model ✓" : "Model ○"}
             </span>
           )}
-          <button
-            className={`mic-pill ${listeningCls}`}
-            onClick={toggleListening}
-            title={status === "listening" ? "Stop listening" : "Start listening"}
-          >
+          <button className={`mic-pill ${listeningCls}`} onClick={toggleListening} title={status === "listening" ? "Stop listening" : "Start listening"}>
             <span className="mic-dot" />
             {status === "listening" ? "Listening" : status === "idle" ? "Idle" : "Off"}
           </button>
-          <button
-            className={`lang-toggle${language === "hi" ? " lang-hi" : ""}`}
-            onClick={() => setLanguage(language === "en" ? "hi" : "en")}
-            title="Toggle language"
-          >
+          <button className={`lang-toggle${language === "hi" ? " lang-hi" : ""}`} onClick={() => setLanguage(language === "en" ? "hi" : "en")} title="Toggle language">
             {language === "en" ? "EN" : "HI"}
           </button>
         </div>
       </header>
-
-      {/* ── Global meeting banner (#15) ────────────────── */}
-      {activeMeetingId && (
-        <div className="global-meeting-banner">
-          <span className="meeting-live-dot pulse" />
-          <span>Meeting in progress</span>
-          <button
-            className="action-btn action-btn-sm"
-            onClick={() => { invoke("end_meeting").catch(() => {}); setActiveMeetingId(null); }}
-          >
-            End
-          </button>
-        </div>
-      )}
 
       {/* ── Toast ──────────────────────────────────────── */}
       {notification && <div className="toast-bar">{notification}</div>}
@@ -308,12 +222,9 @@ export default function App() {
         <div className="live-bar">
           <span className="live-dot" />
           <span className="live-text">{transcript.slice(-140)}</span>
-          <button className="clear-btn" onClick={clearTranscript}>
-            clear
-          </button>
+          <button className="clear-btn" onClick={clearTranscript}>clear</button>
         </div>
       )}
-
       {processingFinalNote && (
         <div className="processing-bar">
           <span className="processing-dot" />
@@ -323,43 +234,49 @@ export default function App() {
 
       {/* ── Main layout ─────────────────────────────────── */}
       <div className="main-layout">
-        <nav className="sidebar">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              className={`nav-btn${view === item.id ? " nav-active" : ""}`}
-              onClick={() => setView(item.id)}
-            >
-              <span className="nav-emoji">{item.emoji}</span>
-              <span className="nav-label">{item.label}</span>
-            </button>
-          ))}
-          <div className="sidebar-spacer" />
-          <div className="sidebar-brand">
-            <img src="/nodemind_icon.svg" alt="Nodemind" className="nokast-logo" />
-          </div>
-        </nav>
+        <Sidebar
+          activeView={view}
+          onNav={changeView}
+          onFocus={handleFocusNav}
+          activeFocusProject={activeFocusProject}
+        />
 
         <main className="content-pane">
-          {view === "today" && (
-            <TodayView
-              transcript={transcript}
-              listeningStatus={status}
-              processingFinalNote={processingFinalNote}
-              language={language}
-              triggerSummarize={triggerSummarize}
-              activityLog={activityLog}
+          {view === "dashboard" && (
+            <DashboardView
+              nodes={graphData.nodes}
+              edges={graphData.edges}
+              driftAlerts={driftAlerts}
+              momentumScores={momentumScores}
+              tasks={recentTasks}
+              onNavigateToGraph={navigateToGraph}
             />
           )}
-          {view === "tasks" && <TaskListView />}
-          {view === "map" && <MentalMapView />}
-          {view === "meetings" && <MeetingsView activeMeetingId={activeMeetingId} onMeetingEnd={() => setActiveMeetingId(null)} />}
-          {view === "fog" && <FogView />}
-          {view === "calendar" && <CalendarView />}
-          {view === "notes" && <HistoricalNotesView onOpenToday={() => setView("today")} />}
+          {view === "graph" && (
+            <KnowledgeGraphView
+              nodes={graphData.nodes}
+              edges={graphData.edges}
+              momentumScores={momentumScores}
+            />
+          )}
           {view === "settings" && <SettingsView />}
         </main>
       </div>
+
+      {/* ── Focus Mode overlay ────────────────────────── */}
+      {showFocus && (
+        <FocusMode
+          nodes={graphData.nodes}
+          driftAlerts={driftAlerts}
+          momentumScores={momentumScores}
+          tasks={recentTasks}
+          onStartFocus={handleStartFocus}
+          onDismiss={() => {
+            setShowFocus(false);
+            localStorage.setItem("nodemind_last_activity", String(Date.now()));
+          }}
+        />
+      )}
     </div>
   );
 }

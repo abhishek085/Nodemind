@@ -449,3 +449,109 @@ Return ONLY valid JSON:
 }
 """
 
+
+# ── Batch Entity Extraction (Qwen3.5 9B) ─────────────────────────────────────
+# Runs in batch mode after every 5 new notes or on a 10-minute idle timer.
+# Uses Qwen3.5 9B for higher quality entity/relationship extraction.
+# Replaces the fixed domain-anchor approach with LLM-discovered clusters.
+#
+# Placeholders:
+#   {note_text} — aggregated note content (up to ~2000 tokens)
+[batch_entity_extract]
+template = """SYSTEM: You extract structured data from personal voice notes. Return ONLY valid JSON. No explanation, preamble, or markdown.
+
+USER: Extract all entities, relationships, and mental fog signals from these voice notes.
+Notes are personal stream-of-consciousness speech. Extract what is meaningful.
+
+<NOTES>
+{note_text}
+</NOTES>
+
+Return ONLY this exact JSON structure:
+{
+  "entities": [
+    {"id": "unique_slug", "label": "Entity Name", "type": "project|goal|person|idea|topic", "context": "one sentence why this matters", "sentiment": "positive|neutral|negative"}
+  ],
+  "edges": [
+    {"from": "slug_a", "to": "slug_b", "type": "related_to|part_of|triggers|involves|blocked_by", "weight": 0.5}
+  ],
+  "fog_signals": [
+    {"description": "what the user seems confused or scattered about", "intensity": 0.7, "related_entity": "slug_or_null"}
+  ],
+  "tasks": [
+    {"label": "task description", "project": "project_slug_or_null", "urgency": "high|medium|low"}
+  ]
+}"""
+
+# ── Drift Analysis (Gemma4 E4B, weekly) ──────────────────────────────────────
+# Lightweight weekly check: which goals haven't appeared in recent activity?
+# Keep under 400 tokens total.
+#
+# Placeholders:
+#   {goal_labels}     — comma-separated goal labels
+#   {recent_topics}   — comma-separated recent topic labels from this week's notes
+[drift_analysis]
+template = """SYSTEM: Analyze user goals vs recent activity. Return JSON only. No other text.
+
+USER: Goals: {goal_labels}
+Topics from notes this week: {recent_topics}
+
+{"drifting_goals":[{"goal":"label","days_since_mentioned":7,"drift_score":0.8}]}"""
+
+# ── Real-Time Fog Detection (Gemma4 E4B, ≤ 250 tokens) ───────────────────────
+# Runs every 60 seconds during live recording on the last ~200 tokens.
+# Must stay under 250 tokens total.
+#
+# Placeholders:
+#   {transcript} — last 200 tokens of transcript
+[realtime_fog]
+template = """Return JSON only. No other text.
+{"topic":"one_word_topic","fog":true,"energy":"high|low|neutral","tag":"project|personal|unclear"}
+Transcript: {transcript}"""
+
+# ── Contradiction Surface (Qwen3.5 9B, weekly) ───────────────────────────────
+# Finds tensions between what the user says they want and what they are doing.
+# Keep combined token count under 600.
+#
+# Placeholders:
+#   {intention_list} — stated intentions this month (under 300 tokens)
+#   {action_list}    — recent actions and projects mentioned (under 300 tokens)
+[contradiction_surface]
+template = """SYSTEM: Find contradictions between intentions and recent actions in personal voice notes. Be specific. Return JSON only. Only flag real contradictions, not minor inconsistencies.
+
+USER: Stated intentions this month: {intention_list}
+Recent actions and projects mentioned: {action_list}
+
+{"contradictions":[{"intention":"...","conflicting_action":"...","severity":"medium|high","explanation":"one sentence"}]}"""
+
+
+# ── Extraction Validator (Gemma4 E4B, post-Qwen pass) ────────────────────────
+# Runs after every Qwen3.5 extraction to filter noise and fix broken labels.
+# Gemma4 is used here because it is fast and this must not stall the pipeline.
+# Keep under 350 tokens total — pass only labels, not full context.
+#
+# What to remove:
+#   - Transcription fragments ("um okay so", "uh", partial words, "[BLANK_AUDIO]")
+#   - Labels that are not coherent nouns/phrases (single random words from noise)
+#   - Task titles with no action verb (pure observations or filler)
+#
+# What to fix:
+#   - Mis-cased or slightly garbled names that are still recognisable
+#   - Task titles starting with "I should" / "maybe" → rewrite as imperative
+#
+# Placeholders:
+#   {items_json} — compact JSON array: [{"id":"t0","label":"...","type":"task"}, ...]
+[extraction_validator]
+template = """Return JSON only. No other text.
+
+You are reviewing entities extracted from voice notes. Remove noise (transcription artifacts, gibberish, filler words, sentence fragments). Fix task titles that are not actionable by rewriting them as short imperative phrases. Keep everything that looks like a real project name, person name, goal, topic, or task.
+
+Items: {items_json}
+
+{"keep":["t0","t2"],"fix":{"t1":"revised actionable label"}}
+
+Rules:
+- "keep" must list every id that should be retained unchanged.
+- "fix" maps ids to corrected labels (only when a correction improves clarity).
+- Any id not in "keep" or "fix" will be dropped.
+- If all items look valid, list all ids in "keep" and leave "fix" empty."""
