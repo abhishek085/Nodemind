@@ -2,298 +2,114 @@
   <img src="public/nodemind_icon.png" alt="Nodemind icon" width="120" />
 </p>
 
-<h1 align="center">Nodemind by Nokast</h1>
+<h1 align="center">Nodemind</h1>
 
 <p align="center">
-  A cognition agent for messy, moving minds.<br />
-  Built for founders, builders, and fast thinkers, Nodemind turns spoken thought into structure, direction, and momentum — locally, privately, and on your Mac.
+  Talk out your messy thoughts. Get a clean checklist.<br />
+  A dead-simple voice-to-checklist tool that runs <strong>100% in your browser</strong> — free, private, and offline.
 </p>
 
 <p align="center">
-  <strong>Fully local</strong> • <strong>macOS native</strong> • <strong>Open source</strong> • <strong>Built with Tauri, Rust, React, Whisper, and Ollama</strong>
+  <a href="https://abhishek085.github.io/Nodemind/">
+    <img alt="Open Nodemind" src="https://img.shields.io/badge/Open-Nodemind-6366f1?style=for-the-badge&logo=googlechrome&logoColor=white" />
+  </a>
 </p>
 
 <p align="center">
-	<a href="https://github.com/abhishek085/Nodemind/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg">
-		<img alt="Download Nodemind for macOS" src="https://img.shields.io/badge/Download-Nodemind%20for%20macOS-111111?style=for-the-badge&logo=apple&logoColor=white" />
-	</a>
+  <strong>No install</strong> • <strong>No account</strong> • <strong>No cloud</strong> • <strong>No API key</strong> • <strong>Open source</strong>
 </p>
 
-<p align="center">
-	<img src="public/Nodemind_preview.gif" alt="Nodemind animated preview" width="960" />
-</p>
+## What it is
 
-## About
+You have too many ideas and you keep losing them. Nodemind fixes exactly that one thing:
 
-Nodemind is for the moments when your brain is moving faster than your notes.
+> **Tap the mic → ramble for 30 seconds → get a clean, organized to-do list.**
 
-It doesn’t try to replace how you think. It helps you catch the thought before it slips away, organize the noise, and surface what actually matters next.
+It listens, transcribes your speech, strips the "umm"s and repetition, and turns your rambling into clear, checkable tasks. Then you can edit, check off, copy, or delete them.
 
-Instead of making you pause and type everything into a chat box, Nodemind listens while you talk naturally. It picks up commands, structure, and useful signals from your voice, then turns them into something you can actually work with.
+The catch most tools have — *"your voice goes to our servers"* — doesn't apply here. **Everything runs inside your browser, on your own device.** Your voice and your notes never leave your computer.
 
-It’s built for people who think out loud — founders, builders, and anyone who has too many ideas moving at once.
+## Try it
 
-With Nodemind, you can:
+👉 **[abhishek085.github.io/Nodemind](https://abhishek085.github.io/Nodemind/)**
 
-* speak naturally in Hindi, English, or mixed speech
-* turn spoken thoughts into tasks and goals
-* capture meetings locally and generate notes afterward
-* review summaries, suggestions, and focus directions
-* build a clearer map of your projects, people, topics, and recurring mental loops
+1. Open the link in **Chrome or Edge** on a laptop/desktop.
+2. Click **Set up Nodemind** once — this downloads the AI (~1 GB). It's cached afterward, so it only happens the first time.
+3. Tap the 🎤 button, talk, then tap again to stop.
+4. Your checklist appears. Edit / check / copy / delete as you like — it saves automatically.
 
-No cloud speech-to-text. No hosted LLM in the core flow. Your voice, transcripts, and structured context stay on your machine.
+**Tip:** In Chrome/Edge, click the **install** icon in the address bar to add Nodemind to your dock as a standalone app. After the first setup it even works with no internet.
 
+## Requirements
 
+Running the AI locally is what keeps it private and free — the tradeoff is that it needs a capable browser and machine:
 
-### Screenshot:
+| | |
+|---|---|
+| **Browser** | Chrome or Edge (recent). Safari's WebGPU support is still partial. |
+| **Device** | A laptop/desktop with ~8 GB+ RAM. Phones struggle with the local model. |
+| **First load** | A one-time ~1 GB model download. Cached afterward. |
+| **Internet** | Needed only for that first setup. Works offline after. |
 
-<img src="public/D4EA9FF6-5E1C-4663-B028-95E80ACFAEE5.png" alt="Nodemind app screenshot" />
+## How it works
 
-## Install on macOS
+A single self-contained HTML page with a fully on-device pipeline:
 
-Nodemind is currently distributed as a native macOS app bundle.
+1. **Capture** — the browser records your microphone (you tap to start/stop).
+2. **Speech → text** — [Whisper](https://github.com/openai/whisper) runs locally in the browser via [Transformers.js](https://github.com/huggingface/transformers.js) on WebGPU.
+3. **Rant → checklist** — a small local LLM ([Llama 3.2 1B](https://huggingface.co/meta-llama/Llama-3.2-1B) via [WebLLM](https://github.com/mlc-ai/web-llm), also WebGPU) rewrites the transcript into clean, deduplicated, imperative tasks.
+4. **Review** — tasks render as an editable checklist, saved to `localStorage`.
 
-Before launching the app, make sure your machine already has:
-
-- Ollama installed locally
-- a capable local model available in Ollama
-- a decent 8B model running for better performance
-
-<p align="center">
-	<a href="https://github.com/abhishek085/Nodemind/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg">
-		<img alt="Download Nodemind for macOS" src="https://img.shields.io/badge/Download-Nodemind%20for%20macOS-111111?style=for-the-badge&logo=apple&logoColor=white" />
-	</a>
-</p>
-
-1. Download the installer: [Nodemind_0.1.0_aarch64.dmg](https://github.com/abhishek085/Nodemind/releases/download/v0.1.0/Nodemind_0.1.0_aarch64.dmg)
-2. Open the `.dmg` and move the app into your `Applications` folder.
-3. Before launching the app for the first time, run this command in Terminal because the app is currently unsigned:
-
-```bash
-sudo xattr -cr /Applications/Nodemind.app
-```
-
-4. Open Nodemind from `Applications`.
-
-## What The App Does
-
-### Voice-first capture
-
-- Continuously listens when the mic is on
-- Transcribes speech locally with Whisper-style speech recognition
-- Supports Hindi, English, and mixed speech while normalizing output for downstream processing
-
-### Direct voice commands
-
-- Detects instruction-like speech and routes it for structured action
-- Can create tasks, reminders, goals, focus blocks, and meeting actions
-- Supports natural commands such as starting or ending a meeting, setting a goal, or creating a task
-
-### Ambient thought processing
-
-- Treats non-command speech as ambient thinking
-- Sends transcript chunks to a local LLM for annotation
-- Extracts tasks, topics, and fog signals in the background
-
-### Today dashboard
-
-- Shows live transcript activity
-- Surfaces saved suggestions and summaries
-- Displays goals, activity, and recent structured notes from your day
-
-### Meetings and people memory
-
-- Start a meeting from voice or UI
-- Capture meeting context over time
-- Generate summaries, decisions, and action items locally
-- Group meetings by person for later review
-
-### Mental map
-
-- Builds a graph of goals, tasks, topics, people, projects, and fog patterns
-- Helps you see relationships between active work and recurring thought loops
-- Lets you refresh and inspect the current state of your mental model
-
-### Fog detection
-
-- Tracks signals like overthinking, looping, uncertainty, and context friction
-- Turns subjective mental clutter into something reviewable
-- Helps convert vague cognitive drag into concrete action
-
-### Calendar and focus support
-
-- Surfaces focus-oriented suggestions
-- Supports calendar-style review for sessions and planning flows
-- Gives you a structured review layer beyond raw transcripts
-
-### Local persistence
-
-- Stores transcripts, tasks, goals, meetings, and graph state locally
-- Uses SQLite on-device for persistence
-- Keeps your voice-derived data available without relying on external services
-
-## How It Works
-
-Nodemind uses a local, offline-first pipeline:
-
-1. **Audio capture**
-	The Rust backend captures microphone audio when listening is enabled.
-
-2. **Speech to text**
-	Audio chunks are transcribed locally using Whisper-style STT.
-
-3. **Command detection**
-	If speech sounds like a direct command, it is parsed immediately into a structured intent.
-
-4. **Ambient annotation**
-	If speech is not a command, it is treated as ambient thought and analyzed for tasks, topics, and fog signals.
-
-5. **Local reasoning**
-	Ollama is used locally for command parsing, annotation, suggestions, summaries, and meeting notes.
-
-6. **State updates**
-	Extracted entities are written into local storage and used to update tasks, goals, meetings, and the mental map.
-
-7. **UI review**
-	Results appear across the Today, Tasks, Meetings, Fog, Calendar, Notes, and Mental Map views.
-
-## Why It Exists
-
-Most productivity tools assume your thinking is already clean, typed, and intentional.
-
-Nodemind is built for the earlier stage, when ideas are still messy, spoken, contextual, and evolving. It helps turn that unstructured stream into an actionable system without forcing you to leave your natural thought process.
+No backend. No server-side anything. The "app" is just static files your browser runs.
 
 ## Privacy
 
-- no cloud speech-to-text in the core app flow
-- no hosted LLM dependency in the core app flow
-- no remote telemetry pipeline built into the product workflow
-- your transcripts, meeting notes, suggestions, and graph data remain local to your machine
+- No cloud speech-to-text.
+- No hosted LLM — the model runs in your browser.
+- No account, no analytics, no telemetry.
+- Your audio, transcripts, and tasks stay on your device.
 
-## Tech Stack
+## Tech stack
 
-- Desktop shell: Tauri 2 with Rust
-- Frontend: React 19, TypeScript, Vite
-- Audio capture: `cpal`
-- Local STT: `whisper-rs` with macOS CoreML assets
-- Local reasoning: Ollama
-- Persistence: SQLite via `rusqlite`
+- **Speech-to-text:** `whisper-base` via Transformers.js (WebGPU)
+- **Task cleanup:** Llama 3.2 1B via WebLLM (WebGPU)
+- **App:** a single static HTML/CSS/JS file — no framework, no build step
+- **Offline / installable:** Web App Manifest + a service worker (PWA)
+- **Hosting:** GitHub Pages (served from the `gh-pages` branch)
 
-## Project Structure
+## Run it locally
 
-- [src](src) — React UI, hooks, types, and view components
-- [src-tauri/src](src-tauri/src) — Rust backend commands, DB layer, prompts, and pipeline logic
-- [src-tauri/resources](src-tauri/resources) — bundled prompts and local model assets
-- [Technical_design.md](Technical_design.md) — architecture direction and product design intent
-- [HowItWorks.md](HowItWorks.md) — current flow notes for speech, command parsing, and local reasoning
-
-## Development
-
-### Prerequisites
-
-- macOS
-- Apple Silicon recommended
-- Node.js 18+
-- Rust stable toolchain
-- Xcode Command Line Tools
-- CMake
-- Ollama installed locally
-- Whisper model assets installed locally in `src-tauri/resources/models`
-
-### Local model setup
-
-The repo intentionally does not commit the Whisper binary weights or compiled CoreML encoder assets. They are large, machine-specific, and should stay local.
-
-The app currently looks for these files at runtime:
-
-- `src-tauri/resources/models/ggml-small.bin`
-- `src-tauri/resources/models/ggml-small-encoder.mlmodelc`
-
-`ggml-small.bin` is required. The CoreML bundle is optional but recommended on Apple Silicon for faster transcription. If the CoreML encoder is missing or fails to initialize, the app falls back to CPU transcription.
-
-Install the local dependencies first:
+No build step — it's a static page. The microphone and WebGPU require a secure context, which `localhost` satisfies, so just serve the folder:
 
 ```bash
-xcode-select --install
-brew install cmake ollama
-ollama pull qwen3.5:9b
+git clone https://github.com/abhishek085/Nodemind.git
+cd Nodemind
+python3 -m http.server 8000
 ```
 
-Then fetch the Whisper weights and build the CoreML encoder with `whisper.cpp`:
+Then open <http://localhost:8000/poc/voice-checklist.html> in Chrome or Edge.
 
-```bash
-git clone https://github.com/ggerganov/whisper.cpp /tmp/whisper.cpp
-cd /tmp/whisper.cpp
-./models/download-ggml-model.sh small
-./models/generate-coreml-model.sh small
-```
+(Any static file server works — e.g. `npx serve`.)
 
-Copy the generated assets into this repo:
+## Project structure
 
-```bash
-mkdir -p src-tauri/resources/models
-cp /tmp/whisper.cpp/models/ggml-small.bin src-tauri/resources/models/
-cp -R /tmp/whisper.cpp/models/ggml-small-encoder.mlmodelc src-tauri/resources/models/
-```
+- [`poc/voice-checklist.html`](poc/voice-checklist.html) — the entire app (UI, voice capture, STT, LLM cleanup, checklist)
+- [`poc/manifest.webmanifest`](poc/manifest.webmanifest), [`poc/sw.js`](poc/sw.js) — PWA manifest + offline service worker
+- [`poc/icon-192.png`](poc/icon-192.png), [`poc/icon-512.png`](poc/icon-512.png) — app icons
 
-Your local folder should end up like this:
+> **Note:** Nodemind began as a native macOS app (Tauri + Rust + Whisper + Ollama). It has since pivoted to this simpler, zero-install web app. The original desktop source still lives under [`src/`](src) and [`src-tauri/`](src-tauri) for reference, but the web app in [`poc/`](poc) is the active product.
 
-```text
-src-tauri/resources/models/
-	ggml-small.bin
-	ggml-small-encoder.mlmodelc/
-		metadata.json
-		model.mil
-		coremldata.bin
-		analytics/
-		weights/
-```
+## Roadmap
 
-These model assets are ignored by Git, so they will stay on your machine and will not be pushed with normal commits.
-
-### Run in development
-
-```bash
-npm install
-npm run tauri dev
-```
-
-If transcription fails on first launch, verify that:
-
-- `ollama serve` is running or can be started from your shell
-- `ollama list` shows `qwen3.5:9b`
-- `src-tauri/resources/models/ggml-small.bin` exists
-- `src-tauri/resources/models/ggml-small-encoder.mlmodelc` exists for CoreML acceleration
-
-### Build a production app
-
-```bash
-npm run tauri build
-```
-
-## Current Status
-
-This is an active open-source project and still evolving.
-
-The current app already includes:
-
-- native macOS desktop packaging
-- local microphone capture and live transcription
-- direct command parsing
-- local LLM-powered chunk annotation and summaries
-- views for Today, Tasks, Meetings, Fog, Calendar, Notes, and Mental Map
+- [ ] Smarter grouping (Today / This week / Someday)
+- [ ] One-tap export to Apple Reminders / Todoist / Notion
+- [ ] Edit-by-voice ("remove the dentist one")
+- [ ] Wider browser support as WebGPU matures
 
 ## Contributing
 
-Contributions are welcome.
-
-1. Read [Technical_design.md](Technical_design.md) before making architectural changes.
-2. Keep PRs small and focused.
-3. Preserve the local-only design unless a change explicitly requires otherwise.
-4. Test changes locally before submitting.
+Contributions are welcome. Keep PRs small and focused, and preserve the on-device, no-cloud design.
 
 ## License
 
-See [LICENSE](LICENSE).
-
-Original source code in this repository is MIT-licensed unless noted otherwise for third-party components.
+See [LICENSE](LICENSE). MIT unless noted otherwise for third-party components.
