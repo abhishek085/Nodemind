@@ -34,4 +34,7 @@ src-tauri/resources/models/**/*.mlmodelc/coremldata.bin
 
 .vscode
 *.md
+!README.md
+!HowItWorks.md
+!Technical_design.md
 .venv

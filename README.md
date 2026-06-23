@@ -151,6 +151,8 @@ Then open **<http://localhost:8000/poc/voice-checklist.html>** in Chrome or Edge
 
 - [`poc/voice-checklist.html`](poc/voice-checklist.html) — the entire app (UI, voice capture, STT, LLM cleanup, checklist)
 - [`poc/manifest.webmanifest`](poc/manifest.webmanifest) · [`poc/sw.js`](poc/sw.js) — PWA manifest + offline service worker
+- [`HowItWorks.md`](HowItWorks.md) — the pipeline in plain language
+- [`Technical_design.md`](Technical_design.md) — architecture & design principles
 
 > **Heads-up:** Nodemind started as a native macOS app (Tauri + Rust + Ollama). It has since pivoted to this zero-install web app. The original desktop source under [`src/`](src) and [`src-tauri/`](src-tauri) is kept for reference, but the web app in [`poc/`](poc) is the active product.
 
