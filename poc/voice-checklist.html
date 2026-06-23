@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nodemind — talk it out, get a checklist</title>
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="description" content="Talk out your messy thoughts, get a clean checklist. Runs 100% on your device — free, private, offline." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon-192.png" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1f232c; --text: #e8eaed;
+      --muted: #9aa0ab; --accent: #6366f1; --accent-2: #818cf8;
+      --ok: #34d399; --warn: #fbbf24; --danger: #ef4444; --border: #2a2f3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+      display: flex; justify-content: center; padding: 28px 16px 64px;
+    }
+    .wrap { width: 100%; max-width: 560px; }
+    header { text-align: center; margin-bottom: 22px; }
+    h1 { font-size: 26px; margin: 0 0 4px; }
+    h1 .node { color: var(--text); } h1 .mind { color: var(--accent-2); }
+    .sub { color: var(--muted); font-size: 14px; margin: 0; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; padding: 18px; margin-bottom: 16px;
+    }
+    button {
+      background: var(--accent); color: #fff; border: none; border-radius: 10px;
+      padding: 11px 18px; font-size: 15px; font-weight: 600; cursor: pointer;
+      transition: opacity .15s, background .15s;
+    }
+    button:hover { opacity: .9; } button:disabled { opacity: .45; cursor: not-allowed; }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+    button.ghost:hover { color: var(--text); border-color: var(--muted); }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+    /* ── setup ─────────────────────────────── */
+    #setup { text-align: center; }
+    #setup p { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+    .progress-track { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin: 14px 0 6px; }
+    .progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width .2s; }
+    .setup-status { font-size: 13px; color: var(--muted); min-height: 18px; }
+    details.adv { margin-top: 14px; text-align: left; }
+    details.adv summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+    details.adv select { width: 100%; margin-top: 8px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+
+    /* ── mic ───────────────────────────────── */
+    .mic-wrap { text-align: center; }
+    .mic-btn {
+      width: 104px; height: 104px; border-radius: 50%; padding: 0; font-size: 42px;
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: 0 6px 24px rgba(99,102,241,.35);
+    }
+    .mic-btn.recording { background: var(--danger); animation: pulse 1.2s infinite; }
+    .mic-btn.busy { background: var(--panel-2); }
+    @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(239,68,68,.5)} 70%{box-shadow:0 0 0 18px rgba(239,68,68,0)} 100%{box-shadow:0 0 0 0 rgba(239,68,68,0)} }
+    .mic-hint { color: var(--muted); font-size: 14px; margin-top: 14px; min-height: 18px; }
+    .type-toggle { display: inline-block; margin-top: 6px; color: var(--accent-2); font-size: 13px; cursor: pointer; }
+    textarea {
+      width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px; font-size: 15px; font-family: inherit; resize: vertical; min-height: 90px; margin-top: 12px;
+    }
+
+    /* ── checklist ─────────────────────────── */
+    .list-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .list-head .count { color: var(--muted); font-size: 13px; }
+    .checklist { list-style: none; padding: 0; margin: 0; }
+    .checklist li {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px;
+    }
+    .checklist input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+    .task-text { flex: 1; font-size: 15px; outline: none; border-radius: 6px; padding: 2px 4px; }
+    .task-text:focus { background: var(--bg); box-shadow: 0 0 0 1px var(--accent); }
+    li.done .task-text { text-decoration: line-through; color: var(--muted); }
+    .icon-btn {
+      background: transparent; border: none; color: var(--muted); cursor: pointer;
+      font-size: 15px; padding: 4px 6px; border-radius: 6px; opacity: .7;
+    }
+    .icon-btn:hover { opacity: 1; background: var(--bg); }
+    .icon-btn.del:hover { color: var(--danger); }
+    .add-row { display: flex; gap: 8px; margin-top: 8px; }
+    .add-row input {
+      flex: 1; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 10px; padding: 11px 12px; font-size: 15px;
+    }
+    .empty { text-align: center; color: var(--muted); font-size: 14px; padding: 20px 0; }
+    .bulk { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap; }
+    .bulk button { font-size: 13px; padding: 8px 12px; }
+    .footer-note { text-align: center; color: var(--muted); font-size: 12px; margin-top: 20px; }
+    .banner { border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 16px; }
+    .banner.err { background: rgba(251,191,36,.1); border: 1px solid var(--warn); color: var(--warn); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1><span class="node">Node</span><span class="mind">mind</span></h1>
+      <p class="sub">Talk out your messy thoughts. Get a clean checklist. 100% on your device.</p>
+    </header>
+
+    <div id="webgpu-warn" class="banner err hidden">
+      ⚠️ This needs <strong>WebGPU</strong> to run the AI on your device. Please open it in a recent
+      <strong>Chrome</strong> or <strong>Edge</strong>.
+    </div>
+
+    <!-- ── First-run setup ─────────────────────────────── -->
+    <div class="card" id="setup">
+      <p>One-time setup downloads the AI (~1&nbsp;GB) so everything runs offline and private.
+         Nothing you say ever leaves your computer.</p>
+      <button id="setup-btn">Set up Nodemind</button>
+      <div class="progress-track hidden" id="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="setup-status" id="setup-status"></div>
+      <details class="adv">
+        <summary>Advanced</summary>
+        <select id="model">
+          <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC" selected>Llama 3.2 1B — recommended</option>
+          <option value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC">Qwen2.5 0.5B — fastest, lower quality</option>
+          <option value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC">Qwen2.5 1.5B — best quality, slower</option>
+        </select>
+      </details>
+    </div>
+
+    <!-- ── Capture ─────────────────────────────────────── -->
+    <div class="card mic-wrap hidden" id="capture">
+      <button class="mic-btn" id="mic-btn">🎤</button>
+      <div class="mic-hint" id="mic-hint">Tap and talk. Tap again to stop.</div>
+      <span class="type-toggle" id="type-toggle">⌨️ type instead</span>
+      <div id="type-area" class="hidden">
+        <textarea id="rant" placeholder="Type or paste your brain-dump, then tap “Make checklist”…"></textarea>
+        <div class="row" style="margin-top:10px; justify-content:center;">
+          <button id="run-btn">Make checklist</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Checklist ───────────────────────────────────── -->
+    <div class="card hidden" id="list-card">
+      <div class="list-head">
+        <strong>Your checklist</strong>
+        <span class="count" id="count"></span>
+      </div>
+      <ul class="checklist" id="checklist"></ul>
+      <div class="empty hidden" id="empty">Nothing yet — tap the mic and talk, or add one below.</div>
+      <div class="add-row">
+        <input id="add-input" placeholder="Add a task manually…" />
+        <button id="add-btn" class="ghost">Add</button>
+      </div>
+      <div class="bulk">
+        <button class="ghost" id="copy-all">Copy all</button>
+        <button class="ghost" id="clear-done">Clear done</button>
+        <button class="ghost" id="clear-all">Clear all</button>
+      </div>
+    </div>
+
+    <div class="footer-note">Free &amp; open source · no account · no cloud · works offline after setup</div>
+  </div>
+
+  <script type="module">
+    import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+    import { pipeline } from "https://esm.run/@huggingface/transformers@3";
+
+    const $ = (id) => document.getElementById(id);
+    let engine = null, transcriber = null;
+    let recorder = null, chunks = [], recording = false;
+    let tasks = load();
+
+    // ── WebGPU gate ──────────────────────────────────────
+    if (!navigator.gpu) {
+      $("webgpu-warn").classList.remove("hidden");
+      $("setup-btn").disabled = true;
+    }
+
+    // ── Setup: load both models ──────────────────────────
+    $("setup-btn").addEventListener("click", async () => {
+      const model = $("model").value;
+      $("setup-btn").disabled = true; $("model").disabled = true;
+      $("progress-track").classList.remove("hidden");
+      try {
+        $("setup-status").textContent = "Downloading the checklist AI…";
+        engine = await webllm.CreateMLCEngine(model, {
+          initProgressCallback: (p) => {
+            $("setup-status").textContent = p.text;
+            if (typeof p.progress === "number") $("progress-fill").style.width = Math.round(p.progress * 60) + "%";
+          },
+        });
+        $("setup-status").textContent = "Downloading the speech model…";
+        transcriber = await pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
+          device: "webgpu",
+          progress_callback: (p) => {
+            if (p.status === "progress" && typeof p.progress === "number")
+              $("progress-fill").style.width = (60 + Math.round(p.progress * 0.4)) + "%";
+          },
+        });
+        $("progress-fill").style.width = "100%";
+        $("setup").classList.add("hidden");
+        $("capture").classList.remove("hidden");
+        $("list-card").classList.remove("hidden");
+        render();
+      } catch (e) {
+        $("setup-status").textContent = "⚠️ Setup failed: " + (e?.message || e);
+        $("setup-btn").disabled = false; $("model").disabled = false;
+      }
+    });
+
+    // ── The cleanup prompt — the heart of the app ────────
+    const SYSTEM_PROMPT = `You convert a person's spoken brain-dump into a short to-do list.
+
+MOST IMPORTANT RULE: Only include tasks the person ACTUALLY said. Never invent, infer, guess, or add tasks that were not explicitly mentioned. If they mention 3 things, output exactly 3. It is far better to miss a task than to add one they never said. Use only their own words and details — do not embellish.
+
+If the brain-dump contains NO actionable tasks (just feelings, musings, or chit-chat), output {"tasks": []}.
+
+Other rules:
+- Output ONLY valid JSON, exactly: {"tasks": ["task one", "task two"]}
+- Each task is a short, clear imperative starting with a verb.
+- Remove filler, hesitation, and repetition.
+- Merge repeated mentions of the same task into one.
+- If the person corrected themselves, keep only the corrected version.
+- No commentary, no preamble — only the JSON object.
+
+Examples:
+Brain-dump: "ugh I really need to water the plants, and remind me to renew my passport before the trip, and water the plants don't forget"
+JSON: {"tasks": ["Water the plants", "Renew passport before the trip"]}
+
+Brain-dump: "man today was exhausting, the weather's been so grey lately, I just want to relax"
+JSON: {"tasks": []}`;
+
+    async function makeChecklist(rant) {
+      if (!engine || !rant) return;
+      setBusy(true, "Thinking…");
+      try {
+        const stream = await engine.chat.completions.create({
+          messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: rant }],
+          temperature: 0.1, max_tokens: 512, stream: true,
+        });
+        let raw = "", n = 0;
+        for await (const chunk of stream) {
+          const d = chunk.choices?.[0]?.delta?.content || "";
+          if (d) { raw += d; $("mic-hint").textContent = `Thinking… (${++n})`; }
+        }
+        const found = parseTasks(raw);
+        if (found.length === 0) {
+          $("mic-hint").textContent = "No to-dos in that one — talk again or add one manually.";
+        } else {
+          addTasks(found);
+          $("mic-hint").textContent = `Added ${found.length} task${found.length > 1 ? "s" : ""} ✓`;
+        }
+      } catch (e) {
+        $("mic-hint").textContent = "⚠️ " + (e?.message || e);
+      } finally {
+        setBusy(false);
+        $("rant").value = "";
+      }
+    }
+
+    function parseTasks(raw) {
+      try {
+        const m = raw.match(/\{[\s\S]*\}/);
+        const obj = JSON.parse(m ? m[0] : raw);
+        if (Array.isArray(obj.tasks)) return obj.tasks.map((t) => String(t).trim()).filter(Boolean);
+      } catch (_) {}
+      return raw.split("\n").map((l) => l.replace(/^[-*\d.\s\[\]x]+/i, "").trim()).filter(Boolean);
+    }
+
+    // ── Voice ────────────────────────────────────────────
+    $("mic-btn").addEventListener("click", async () => {
+      if (recording) { recorder?.stop(); return; }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        chunks = [];
+        recorder = new MediaRecorder(stream);
+        recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+        recorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          recording = false; $("mic-btn").classList.remove("recording");
+          setBusy(true, "Transcribing…");
+          try {
+            const audio = await toAudio(new Blob(chunks));
+            const out = await transcriber(audio);
+            const text = (out?.text || "").trim();
+            if (text) { await makeChecklist(text); }
+            else { setBusy(false); $("mic-hint").textContent = "Didn't catch that — try again."; }
+          } catch (e) { setBusy(false); $("mic-hint").textContent = "⚠️ " + (e?.message || e); }
+        };
+        recorder.start(); recording = true;
+        $("mic-btn").classList.add("recording");
+        $("mic-hint").textContent = "Listening… tap to stop.";
+      } catch (e) {
+        $("mic-hint").textContent = "⚠️ Mic blocked: " + (e?.message || e);
+      }
+    });
+
+    async function toAudio(blob) {
+      const buf = await blob.arrayBuffer();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const decoded = await ctx.decodeAudioData(buf);
+      ctx.close();
+      return decoded.getChannelData(0);
+    }
+
+    function setBusy(b, hint) {
+      $("mic-btn").disabled = b; $("run-btn").disabled = b;
+      $("mic-btn").classList.toggle("busy", b);
+      if (hint) $("mic-hint").textContent = hint;
+    }
+
+    // ── Type-instead toggle ──────────────────────────────
+    $("type-toggle").addEventListener("click", () => $("type-area").classList.toggle("hidden"));
+    $("run-btn").addEventListener("click", () => {
+      const v = $("rant").value.trim();
+      if (v) makeChecklist(v);
+    });
+
+    // ── Task state ───────────────────────────────────────
+    function addTasks(list) {
+      const have = new Set(tasks.map((t) => t.text.toLowerCase()));
+      let id = Date.now();
+      list.forEach((text) => {
+        if (!have.has(text.toLowerCase())) { tasks.push({ id: id++, text, done: false }); have.add(text.toLowerCase()); }
+      });
+      save(); render();
+    }
+    $("add-btn").addEventListener("click", addManual);
+    $("add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") addManual(); });
+    function addManual() {
+      const v = $("add-input").value.trim();
+      if (v) { addTasks([v]); $("add-input").value = ""; }
+    }
+
+    $("copy-all").addEventListener("click", () => {
+      if (!tasks.length) return;
+      const md = tasks.map((t) => `- [${t.done ? "x" : " "}] ${t.text}`).join("\n");
+      navigator.clipboard.writeText(md);
+      flashBtn($("copy-all"), "Copied ✓");
+    });
+    $("clear-done").addEventListener("click", () => { tasks = tasks.filter((t) => !t.done); save(); render(); });
+    $("clear-all").addEventListener("click", () => {
+      if (tasks.length && confirm("Clear the whole checklist?")) { tasks = []; save(); render(); }
+    });
+
+    function render() {
+      const ul = $("checklist"); ul.innerHTML = "";
+      $("empty").classList.toggle("hidden", tasks.length > 0);
+      const done = tasks.filter((t) => t.done).length;
+      $("count").textContent = tasks.length ? `${done}/${tasks.length} done` : "";
+      tasks.forEach((t) => {
+        const li = document.createElement("li");
+        li.className = t.done ? "done" : "";
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = t.done;
+        cb.onchange = () => { t.done = cb.checked; save(); render(); };
+
+        const span = document.createElement("span");
+        span.className = "task-text"; span.textContent = t.text; span.contentEditable = "true";
+        span.onblur = () => { const v = span.textContent.trim(); if (v) { t.text = v; } else { span.textContent = t.text; } save(); };
+        span.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); span.blur(); } };
+
+        const copy = document.createElement("button");
+        copy.className = "icon-btn"; copy.title = "Copy this task"; copy.textContent = "⧉";
+        copy.onclick = () => { navigator.clipboard.writeText(t.text); flashBtn(copy, "✓"); };
+
+        const del = document.createElement("button");
+        del.className = "icon-btn del"; del.title = "Delete"; del.textContent = "✕";
+        del.onclick = () => { tasks = tasks.filter((x) => x.id !== t.id); save(); render(); };
+
+        li.append(cb, span, copy, del);
+        ul.append(li);
+      });
+    }
+
+    function flashBtn(btn, msg) { const old = btn.textContent; btn.textContent = msg; setTimeout(() => (btn.textContent = old), 1200); }
+    function save() { localStorage.setItem("nodemind_tasks", JSON.stringify(tasks)); }
+    function load() { try { return JSON.parse(localStorage.getItem("nodemind_tasks")) || []; } catch { return []; } }
+
+    // Show the list immediately if there are saved tasks (even before setup).
+    if (tasks.length) { $("list-card").classList.remove("hidden"); render(); }
+  </script>
+  <script>
+    // Register the service worker so the app is installable & launches offline.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</body>
+</html>
