@@ -55,6 +55,6 @@ This is the deliberate trade for "free + private + no install."
 
 ## 6. History
 
-Nodemind began as a native macOS app (Tauri 2 + Rust + `whisper-rs` + Ollama + SQLite) framed as a "cognition agent" with a knowledge graph, meetings, and fog detection. That proved too complex to set up and too abstract for everyday users. The project pivoted to this simpler browser-local tool. The original desktop source remains under [`src/`](src) and [`src-tauri/`](src-tauri) for reference but is no longer the active product.
+Nodemind began as a native macOS app (Tauri 2 + Rust + `whisper-rs` + Ollama + SQLite) framed as a "cognition agent" with a knowledge graph, meetings, and fog detection. That proved too complex to set up and too abstract for everyday users. The project pivoted to this simpler browser-local tool. The original desktop source lives in the project's git history.
 
 See [HowItWorks.md](HowItWorks.md) for the plain-language version.

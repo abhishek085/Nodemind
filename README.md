@@ -154,7 +154,7 @@ Then open **<http://localhost:8000/poc/voice-checklist.html>** in Chrome or Edge
 - [`HowItWorks.md`](HowItWorks.md) — the pipeline in plain language
 - [`Technical_design.md`](Technical_design.md) — architecture & design principles
 
-> **Heads-up:** Nodemind started as a native macOS app (Tauri + Rust + Ollama). It has since pivoted to this zero-install web app. The original desktop source under [`src/`](src) and [`src-tauri/`](src-tauri) is kept for reference, but the web app in [`poc/`](poc) is the active product.
+> **History:** Nodemind started as a native macOS app (Tauri + Rust + Ollama) before pivoting to this zero-install web app. The original desktop source lives in the project's git history.
 
 ---
 
