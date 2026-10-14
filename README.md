@@ -11,7 +11,7 @@
 <p align="center">
   A voice-first, fully local <strong>personal thinking assistant</strong> for macOS.<br />
   Speak — in English or Hindi — and Nodemind turns the ramble into a clean checklist,
-  a living thought graph, and a friction-free plan for today.
+  a living thought graph, and a clear view of your day.
 </p>
 
 <p align="center">
@@ -38,8 +38,8 @@ Nodemind gives them a place to land:
    and goals, and files them into your mind map.
 3. **🗺️ Map** — everything you've ever said becomes a living graph of thoughts,
    topics, people, and goals, linked by what they relate to.
-4. **📅 Today** — one screen for the day: a sharp "friction" insight, your checklist,
-   focus blocks, and what your Apple Calendar already owns.
+4. **📅 Today** — one screen for the day: your checklist (grouped by the thought it
+   came from), a timeline of today's notes and meetings, and your calendar.
 
 There is no account, no cloud, and no telemetry. Your voice is transcribed on your
 Mac by a local Whisper model; the reasoning runs on a local 1B LLM. Nothing you say
@@ -53,9 +53,9 @@ ever leaves this device.
 - **Meeting notes** — records you (mic) and the call (your Mac's audio output) separately, so every line is labelled *You* / *Them*; when you stop, the local model writes minutes — summary, decisions, action items — and yours land on Today. Works with Zoom, Meet, Teams, anything playing on the Mac (macOS 14.2+)
 - **Checklist straight to Today** — cleaned tasks are added automatically (duplicates skipped); undo any that are wrong
 - **Search by meaning** — EmbeddingGemma 2 finds what you said even in different words ("car maintenance" → "the car needs servicing"), with a boost for exact names; <kbd>⌘K</kbd>
-- **Mind map** (React Flow) — thoughts orbit the center; topics, people, and goals ring the outside; search your memory in one keystroke
-- **Direct voice commands** — "remind me to call Sam" or "start a 25-minute focus" are recognized and made actionable
-- **Today view** — friction insight, focus timer with a progress ring, checklist, and calendar sync (read-only, via AppleScript)
+- **Mind map** — a force-directed map of your thoughts, the topics and people they share, links between similar thoughts (EmbeddingGemma 2), and recurring fog patterns; hover to trace connections, click for details
+- **Direct voice commands** — "remind me to call Sam" becomes a task, even mid-ramble
+- **Today view** — your checklist grouped by the thought it came from (no duplicates), a timeline of today's notes and meetings, and your calendar
 - **Auto-update** — checks GitHub Releases and relaunches into the new build when you approve
 
 ## 🧱 How it's built
@@ -64,7 +64,7 @@ ever leaves this device.
 | --- | --- |
 | Shell | [Tauri 2](https://tauri.app) (Rust) + React 19 + Tailwind v4 |
 | Speech→Text | `whisper-server` (whisper.cpp v1.9.5, Metal) kept loaded for live, per-pause transcription; `whisper-cli` fallback — bundled sidecars |
-| Reasoning | `llama-server` (llama.cpp b11609, Metal) hosting Llama 3.2 1B Instruct — bundled sidecar |
+| Reasoning | `llama-server` (llama.cpp b11609, Metal) hosting Qwen3.5 0.8B (Q4_K_M) — bundled sidecar |
 | Memory & search | EmbeddingGemma 2 vectors per transcript passage (semantic search + graph linking) + SQLite graph store, all in your app-data folder |
 | Calendar | Read-only via EventKit (all accounts, instant), AppleScript fallback |
 | macOS bridge | `nodemind-helper` (Swift) — EventKit calendar + Core Audio system-audio tap for meeting mode |
@@ -115,7 +115,7 @@ sidecars and models.
 ## 🔒 Privacy, stated plainly
 
 - Audio is buffered in-process, transcribed locally, and discarded after each capture.
-- The SQLite database (thoughts, tasks, graph, vectors, focus sessions) lives in
+- The SQLite database (thoughts, meetings, tasks, graph, vectors) lives in
   `~/Library/Application Support/com.nokast.nodemind/` — open the folder from Settings.
 - The only network calls the app can make are: the one-time model download on first
   launch, and the opt-in update check. No analytics, no remote STT, no remote LLM.
@@ -135,7 +135,6 @@ sidecars and models.
 │   ├── calendar/           # read-only Apple Calendar bridge
 │   └── lib.rs              # window, tray, menu, exit wiring
 ├── scripts/
-│   ├── fetch-models.sh     # pinned model downloads (resume + sha256 verify)
 │   └── build-sidecars.sh   # whisper.cpp v1.9.5 + llama.cpp b11609 (Metal, static)
 └── src-tauri/resources/    # prompts.toml + bundled models
 ```

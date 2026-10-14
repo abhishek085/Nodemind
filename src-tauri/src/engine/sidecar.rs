@@ -1,7 +1,7 @@
 //! Sidecar process management.
 //!
 //! Three servers run on loopback:
-//!   - port 8642 — `llama-server`, the chat model (Llama 3.2 1B) for cleanup/annotation
+//!   - port 8642 — `llama-server`, the chat model (Qwen3.5 0.8B) for cleanup/annotation/minutes
 //!   - port 8643 — `llama-server`, the embedding model (EmbeddingGemma 2) for the vector store
 //!   - port 8644 — `whisper-server`, speech → text with the model kept loaded,
 //!     so each live utterance transcribes in ~0.2 s instead of reloading
@@ -132,7 +132,9 @@ pub async fn ensure_chat_server(state: &Arc<AppState>) -> bool {
     cmd.arg("-m")
         .arg(&model)
         .args(["--host", HOST, "--port", &CHAT_PORT.to_string()])
-        .args(["-ngl", "99", "--ctx-size", "8192", "--no-webui"])
+        // --jinja: use the model's own chat template (Qwen needs it to honour
+        // `enable_thinking: false`, see llm::chat).
+        .args(["-ngl", "99", "--ctx-size", "8192", "--no-webui", "--jinja"])
         .env("GGML_LOG_LEVEL", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null());

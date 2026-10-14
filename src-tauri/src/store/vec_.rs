@@ -129,6 +129,18 @@ pub fn knn(
     Ok(hits)
 }
 
+/// Every (ref_id, vector) of one kind for a model — for all-pairs work at
+/// personal scale (e.g. linking similar thoughts).
+pub fn all_vectors(conn: &Connection, model: &str, ref_kind: &str) -> Result<Vec<(String, Vec<f32>)>> {
+    let mut stmt = conn
+        .prepare("SELECT ref_id, vec FROM embeddings WHERE model = ?1 AND ref_kind = ?2")
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    let rows = stmt
+        .query_map(params![model, ref_kind], |r| Ok((r.get::<_, String>(0)?, from_blob(&r.get::<_, Vec<u8>>(1)?))))
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(rows.flatten().collect())
+}
+
 /// Delete all vectors belonging to a reference.
 pub fn delete_ref(conn: &Connection, ref_kind: &str, ref_id: &str) -> Result<()> {
     conn.execute(

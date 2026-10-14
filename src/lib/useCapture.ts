@@ -106,7 +106,12 @@ export function useCapture(): CaptureController {
       }),
       api.on<{ message: string }>("capture-warning", (e) => setWarning(e.message)),
       api.on<{ text: string }>("capture-partial", (e) => setPartial(e.text)),
-      api.on<CaptureResult>("capture-complete", (result) => setPhase({ name: "result", result })),
+      api.on<CaptureResult>("capture-complete", (result) => {
+        // Only a full result can be rendered; ignore anything partial.
+        if (typeof result?.transcript === "string" && Array.isArray(result.tasks)) {
+          setPhase({ name: "result", result });
+        }
+      }),
       api.on<{ message: string }>("capture-error", (e) => {
         setError(e.message);
         setPhase({ name: "idle" });

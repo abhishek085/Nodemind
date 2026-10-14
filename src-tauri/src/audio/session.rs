@@ -116,6 +116,7 @@ pub fn start(state: &Arc<AppState>, language: &str, mode: CaptureMode) -> Result
         None
     };
     drop(tx); // the sources hold the remaining senders
+    let has_system = system.is_some();
 
     *slot = Some(Session {
         id,
@@ -130,6 +131,7 @@ pub fn start(state: &Arc<AppState>, language: &str, mode: CaptureMode) -> Result
     });
     drop(slot);
 
+    crate::applog::write(state, "app.log", &format!("capture {id} started ({mode:?}, system audio: {})", has_system));
     state.emit("capture-state", &serde_json::json!({ "state": "recording", "mode": mode }));
     crate::tray::set_status(state, crate::tray::TrayStatus::Recording(0));
     spawn_ticker(state.clone(), id, mode);
@@ -233,8 +235,9 @@ pub async fn stop(state: Arc<AppState>) -> Result<CaptureResult> {
     state.emit("capture-stage", &serde_json::json!({ "stage": "transcribing" }));
     crate::tray::set_status(&state, crate::tray::TrayStatus::Processing);
 
-    let Session { mode, mic, system, transcriber, language, started_at_ms, started, .. } = session;
+    let Session { id, mode, mic, system, transcriber, language, started_at_ms, started, .. } = session;
     let duration_secs = started.elapsed().as_secs() as i64;
+    let t0 = Instant::now();
     // Joining the sources flushes their final utterances and closes the channel.
     let _ = tauri::async_runtime::spawn_blocking(move || {
         mic.stop();
@@ -244,12 +247,28 @@ pub async fn stop(state: Arc<AppState>) -> Result<CaptureResult> {
     })
     .await;
     let transcript = transcriber.await.unwrap_or_default();
+    let t_transcript = t0.elapsed();
 
     let result =
         pipeline::organize(state.clone(), transcript, language, started_at_ms, duration_secs, mode).await;
 
     crate::tray::set_status(&state, crate::tray::TrayStatus::Idle);
     state.emit("capture-state", &serde_json::json!({ "state": "idle" }));
+    crate::applog::write(
+        &state,
+        "app.log",
+        &match &result {
+            Ok(r) => format!(
+                "capture {id} done: {duration_secs}s audio, {} chars, {} tasks, minutes: {} — transcript tail {:.2}s, organize {:.2}s",
+                r.transcript.len(),
+                r.tasks.len(),
+                r.minutes.is_some(),
+                t_transcript.as_secs_f32(),
+                (t0.elapsed() - t_transcript).as_secs_f32(),
+            ),
+            Err(e) => format!("capture {id} failed: {}", e.message()),
+        },
+    );
     match &result {
         Ok(r) => {
             state.emit("capture-complete", &serde_json::to_value(r).unwrap_or_default());

@@ -6,6 +6,7 @@
 //! Nodemind runs from the menu bar (see `tray`); the main window opens on
 //! demand, or at launch only when first-run setup still has to happen.
 
+mod applog;
 mod audio;
 mod calendar;
 mod commands;
@@ -58,7 +59,6 @@ pub fn run() {
             // engine
             commands::engine::engine_status,
             commands::engine::begin_setup,
-            commands::engine::restart_engine,
             // capture
             commands::capture::start_capture,
             commands::capture::stop_capture,
@@ -66,27 +66,22 @@ pub fn run() {
             commands::capture::capture_status,
             commands::capture::open_main_window,
             // thoughts / tasks / graph
-            commands::thoughts::get_thoughts,
             commands::thoughts::get_thought,
             commands::thoughts::delete_thought,
-            commands::thoughts::get_tasks,
             commands::thoughts::add_task,
             commands::thoughts::update_task,
             commands::thoughts::delete_task,
             commands::thoughts::get_graph,
+            commands::thoughts::get_today,
             commands::thoughts::search_memory,
             // calendar
             commands::calendar::sync_calendar,
-            // today
-            commands::today::get_today_brief,
-            commands::today::start_focus,
-            commands::today::finish_focus,
-            commands::today::get_focus_today,
             // settings
             commands::settings::get_settings,
             commands::settings::set_language,
             commands::settings::open_data_dir,
             commands::settings::reindex_embeddings,
+            commands::settings::log_ui_error,
             // updates
             commands::updates::check_for_updates,
             commands::updates::install_update,

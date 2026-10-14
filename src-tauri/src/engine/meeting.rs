@@ -7,7 +7,7 @@
 //! On speakers (not headphones) the mic also hears the other side, so a
 //! "You" line that repeats a nearby "Them" line is dropped as echo.
 //!
-//! Minutes are map-reduce so an hour-long call fits the 1B model's context:
+//! Minutes are map-reduce so an hour-long call fits the small model's context:
 //! ~1,800-word chunks → notes in parallel → one merged summary.
 
 use serde::{Deserialize, Serialize};
@@ -136,12 +136,12 @@ pub async fn minutes(transcript: &str) -> Result<Minutes, Error> {
     let mut seen = std::collections::HashSet::new();
     for p in &parts {
         for d in &p.decisions {
-            if seen.insert(crate::engine::pipeline::task_key(d)) {
+            if seen.insert(crate::engine::tasks::task_key(d)) {
                 out.decisions.push(d.clone());
             }
         }
         for a in &p.action_items {
-            if seen.insert(crate::engine::pipeline::task_key(&a.task)) {
+            if seen.insert(crate::engine::tasks::task_key(&a.task)) {
                 out.action_items.push(a.clone());
             }
         }
@@ -166,7 +166,7 @@ pub async fn minutes(transcript: &str) -> Result<Minutes, Error> {
 }
 
 /// Minutes for one chunk: the summary prompt and the action-item prompt run
-/// in parallel (separate focused prompts recall far more for a 1B model).
+/// in parallel (separate focused prompts recall far more for a small model).
 async fn chunk_minutes(text: &str) -> Result<Minutes, Error> {
     let (notes_sys, notes_user) =
         (prompts::get("meeting_chunk.system"), prompts::fill("meeting_chunk.user", &[("text", text)]));
@@ -176,7 +176,7 @@ async fn chunk_minutes(text: &str) -> Result<Minutes, Error> {
         chat(&notes_sys, &notes_user, 0.1, 400),
         chat(&actions_sys, &actions_user, 0.0, 500),
     );
-    // A 1B model occasionally emits broken JSON; one retry is cheap (~0.3 s).
+    // A small model occasionally emits broken JSON; one retry is cheap (~0.3 s).
     let v = match extract_json(&notes?) {
         Some(v) => v,
         None => extract_json(&chat(&notes_sys, &notes_user, 0.3, 400).await?)

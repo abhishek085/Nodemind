@@ -42,8 +42,9 @@ export default function CaptureView({ settings, onCaptured }: Props) {
 
   const { phase } = cap;
   return (
-    <div className="flex flex-1 items-center justify-center overflow-y-auto p-8">
-      <div className="w-full max-w-2xl">
+    <div className="flex flex-1 flex-col overflow-y-auto p-8">
+      {/* my-auto: centred when short, scrolls from the top when tall. */}
+      <div className="mx-auto my-auto w-full max-w-2xl">
         <div className="flex flex-col items-center rounded-2xl bg-surface p-10 text-center shadow-sm backdrop-blur-xl fade-up">
           {phase.name === "idle" && (
             <>
@@ -98,7 +99,12 @@ export default function CaptureView({ settings, onCaptured }: Props) {
             </>
           )}
 
-          {phase.name === "processing" && <Processing stage={phase.stage} />}
+          {phase.name === "processing" && (
+            <>
+              <Processing stage={phase.stage} />
+              <LivePartial text={cap.partial} className="mt-6 w-full opacity-70" />
+            </>
+          )}
 
           {phase.name === "result" && phase.result.transcript === "" && (
             <NothingHeard onRetry={cap.reset} />

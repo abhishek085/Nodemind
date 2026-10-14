@@ -60,8 +60,6 @@ pub struct EngineStatus {
     pub arch: String,
     pub chat_running: bool,
     pub embed_running: bool,
-    /// CoreML whisper encoder detected next to the model (faster STT).
-    pub coreml: bool,
     pub models: Vec<ModelStatusView>,
     pub error: Option<String>,
 }
@@ -143,21 +141,10 @@ impl AppState {
         })
     }
 
-    /// Resolve the path of a model file, preferring the user's app-data copy
-    /// (writable, downloaded) over the bundled read-only copy.
+    /// Path of a downloaded model in app-data/models, if present.
     pub fn resolve_model(&self, key: ModelKey) -> Option<std::path::PathBuf> {
-        let name = key.filename();
-        let in_data = self.models_dir.join(name);
-        if in_data.is_file() && in_data.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-            return Some(in_data);
-        }
-        // tauri.conf.json bundles `resources/models/**` with its path prefix,
-        // so it lands at Contents/Resources/resources/models.
-        let in_bundle = self.resources_dir.join("resources/models").join(name);
-        if in_bundle.is_file() {
-            return Some(in_bundle);
-        }
-        None
+        let path = self.models_dir.join(key.filename());
+        (path.is_file() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)).then_some(path)
     }
 
     pub fn set_phase(&self, phase: EnginePhase) {
@@ -205,7 +192,6 @@ impl AppState {
             arch: crate::models::host_arch(),
             chat_running: self.chat_running.load(Ordering::SeqCst),
             embed_running: self.embed_running.load(Ordering::SeqCst),
-            coreml: crate::engine::whisper::coreml_enabled(self),
             models,
             error: self.model_error.lock().unwrap().clone(),
         }

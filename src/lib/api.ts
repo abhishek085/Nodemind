@@ -10,15 +10,13 @@ import type {
   CaptureResult,
   CaptureStatus,
   EngineStatus,
-  FocusSession,
-  FocusStarted,
   GraphData,
   ModelStatusView,
   Settings,
-  Task,
   Thought,
   SearchHit,
-  TodayBrief,
+  TaskRef,
+  Today,
   UpdateInfo,
 } from "./types";
 
@@ -26,7 +24,6 @@ import type {
 
 export const engineStatus = () => invoke<EngineStatus>("engine_status");
 export const beginSetup = () => invoke<void>("begin_setup");
-export const restartEngine = () => invoke<void>("restart_engine");
 
 // ── capture ─────────────────────────────────────────────────────────────────
 
@@ -47,20 +44,17 @@ export const openMainWindow = (view?: string) =>
 
 // ── thoughts / tasks / graph ────────────────────────────────────────────────
 
-export const getThoughts = (limit?: number) =>
-  invoke<Thought[]>("get_thoughts", { limit: limit ?? null });
-
 export const getThought = (id: string) =>
   invoke<Thought | null>("get_thought", { id });
 
 export const deleteThought = (id: string) =>
   invoke<void>("delete_thought", { id });
 
-export const getTasks = (includeDone?: boolean) =>
-  invoke<Task[]>("get_tasks", { includeDone: includeDone ?? null });
+/** Add a typed task; resolves to null when it duplicates an open task. */
+export const addTask = (title: string) => invoke<TaskRef | null>("add_task", { title });
 
-export const addTask = (title: string, project?: string | null) =>
-  invoke<Task>("add_task", { title, project: project ?? null });
+/** The Today screen: open checklist (with sources) + today's captures. */
+export const getToday = () => invoke<Today>("get_today");
 
 export const updateTask = (id: string, title?: string | null, done?: boolean | null) =>
   invoke<void>("update_task", { id, title: title ?? null, done: done ?? null });
@@ -78,17 +72,6 @@ export const searchMemory = (query: string, k?: number) =>
 
 export const syncCalendar = () => invoke<CalendarSync>("sync_calendar");
 
-/** Cached per day; `refresh` forces a new LLM insight. */
-export const getTodayBrief = (refresh?: boolean) =>
-  invoke<TodayBrief>("get_today_brief", { refresh: refresh ?? null });
-
-export const startFocus = (minutes?: number) =>
-  invoke<FocusStarted>("start_focus", { minutes: minutes ?? null });
-
-export const finishFocus = (id: string, minutes?: number | null) =>
-  invoke<void>("finish_focus", { id, minutes: minutes ?? null });
-
-export const getFocusToday = () => invoke<FocusSession[]>("get_focus_today");
 
 // ── settings / updates ──────────────────────────────────────────────────────
 
@@ -100,6 +83,14 @@ export const reindexEmbeddings = () => invoke<number>("reindex_embeddings");
 
 export const checkForUpdates = () => invoke<UpdateInfo | null>("check_for_updates");
 export const installUpdate = () => invoke<void>("install_update");
+
+// ── diagnostics ─────────────────────────────────────────────────────────────
+
+/** Append a UI error to app-data/logs/ui.log (never throws). */
+export function logUiError(message: string): void {
+  const where = typeof window !== "undefined" ? window.location.hash || "/" : "";
+  void invoke("log_ui_error", { message: `[${where}] ${message}` }).catch(() => undefined);
+}
 
 // ── events ──────────────────────────────────────────────────────────────────
 

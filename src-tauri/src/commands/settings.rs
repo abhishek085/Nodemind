@@ -68,6 +68,13 @@ fn lock_db<'s>(s: &'s Arc<AppState>) -> Result<std::sync::MutexGuard<'s, rusqlit
     s.db.lock().map_err(|_| crate::error::Error::Store("db".into()))
 }
 
+/// A webview reports an error (render crash, unhandled rejection).
+#[tauri::command]
+pub fn log_ui_error(state: State<'_, Arc<AppState>>, message: String) {
+    let message: String = message.chars().take(4_000).collect();
+    crate::applog::write(&state, "ui.log", &message);
+}
+
 /// The capture language the user picked ("en" | "hi"), defaulting to English.
 pub fn current_language(state: &AppState) -> String {
     state

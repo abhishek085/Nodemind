@@ -15,6 +15,7 @@ import {
   RecordingHint,
   ResultBody,
   StopButton,
+  TranscriptToggle,
   fmtClock,
 } from "../components/capture";
 import { SearchInput, SearchResults, useSearch } from "../components/search";
@@ -53,7 +54,10 @@ export default function QuickCapture() {
         </div>
       )}
 
-      <main className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-5 py-4 text-center">
+      {/* Safe centering: `my-auto` centres short content but lets tall results
+          scroll from the top (justify-center would clip their top edge). */}
+      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-4 text-center">
+        <div className="my-auto flex w-full flex-col items-center">
         {phase.name === "idle" && search.query.trim().length >= 2 && (
           <div className="w-full self-start">
             <SearchResults hits={search.hits} query={search.query} error={search.error} compact />
@@ -97,13 +101,20 @@ export default function QuickCapture() {
           </>
         )}
 
-        {phase.name === "processing" && <Processing stage={phase.stage} />}
+        {phase.name === "processing" && (
+          <>
+            <Processing stage={phase.stage} />
+            {/* Keep what was said on screen while it's organized. */}
+            <LivePartial text={cap.partial} className="mt-4 w-full opacity-70" />
+          </>
+        )}
 
         {phase.name === "result" && phase.result.transcript === "" && <NothingHeard onRetry={cap.reset} />}
 
         {phase.name === "result" && phase.result.transcript !== "" && (
           <div className="w-full self-start">
             <ResultBody result={phase.result} onChange={cap.setResult} compact />
+            <TranscriptToggle text={phase.result.transcript} />
             <button
               onClick={cap.reset}
               className="mt-4 w-full rounded-lg bg-surface-2 py-1.5 text-xs font-semibold text-ink-2 hover:text-ink"
@@ -114,6 +125,7 @@ export default function QuickCapture() {
         )}
 
         {cap.error && <p className="mt-3 text-[11px] text-danger">{cap.error}</p>}
+        </div>
       </main>
 
       <footer className="flex gap-2 border-t border-line px-3 py-2">

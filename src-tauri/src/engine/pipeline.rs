@@ -25,18 +25,9 @@ use crate::time;
 use uuid::Uuid;
 
 use crate::audio::session::CaptureMode;
+use crate::engine::fog::{self, FogSignal};
 use crate::engine::meeting::{self, Minutes};
-
-/// A task extracted by the annotator.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskDraft {
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub due_hint: Option<String>,
-}
+pub use crate::engine::tasks::TaskRef;
 
 /// Structured extraction from a transcript.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -44,33 +35,10 @@ pub struct TaskDraft {
 pub struct Annotation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    pub tasks: Vec<TaskDraft>,
     pub topics: Vec<String>,
     pub people: Vec<String>,
     pub goals: Vec<String>,
-    /// ids of earlier thoughts this one relates to
-    pub related: Vec<String>,
     pub sentiment: String,
-}
-
-/// A task created by a capture — enough for the UI to show and undo it.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskRef {
-    pub id: String,
-    pub title: String,
-}
-
-/// Normalized form for duplicate detection ("Call Priya." == "call priya").
-pub(crate) fn task_key(title: &str) -> String {
-    title
-        .to_lowercase()
-        .chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// What the UI shows after a capture completes.
@@ -84,7 +52,10 @@ pub struct CaptureResult {
     pub tasks: Vec<TaskRef>,
     pub topics: Vec<String>,
     pub people: Vec<String>,
+    /// Earlier thoughts this one is close to (EmbeddingGemma 2).
     pub related: Vec<String>,
+    /// Where the thinking seemed stuck, if anywhere.
+    pub fog: Vec<FogSignal>,
     /// Parsed direct command, if the transcript looked like one ("remind me…",
     /// "start focus…"). The UI renders it as an actionable chip.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -151,6 +122,7 @@ pub async fn organize(
             topics: Vec::new(),
             people: Vec::new(),
             related: Vec::new(),
+            fog: Vec::new(),
             command: None,
             duration_secs,
             mode,
@@ -178,6 +150,7 @@ pub async fn organize(
         }
         .to_string(),
         minutes: None,
+        fog: None,
     };
     {
         let conn = state
@@ -190,39 +163,19 @@ pub async fn organize(
     }
     state.emit("thoughts-updated", &serde_json::json!({}));
 
-    // 4) Recent thoughts as linking context for the annotator.
-    let pairs: Vec<(String, String)> = {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|_| Error::Store("db poisoned".into()))?;
-        db::get_thoughts(&conn, 8)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| t.id != thought_id)
-            .map(|t| {
-                (
-                    t.id.clone(),
-                    t.text.chars().take(140).collect::<String>(),
-                )
-            })
-            .collect()
-    };
-
     // 5) All LLM passes run concurrently — llama-server decodes them in
     // parallel slots, so wall time is the slowest call, not the sum.
     stage(&state, "organizing");
-    let (checklist, annotation, command, fog_signals, minutes) = match mode {
+    let (checklist, annotation, command, minutes, fog_signals) = match mode {
         CaptureMode::Note => {
             //  - checklist cleanup (the flagship feature)
             //  - graph annotation
-            //  - direct-command parse, only for transcripts that *look* like one
-            //  - Cognitive Mirror friction signals, only for longer transcripts
+            //  - "remind me to…" parse, only for transcripts that look like one
+            //  - fog (where thinking is stuck), only when its cues are present
             let wants_command = looks_like_command(&transcript);
-            let wants_fog = transcript.chars().count() > 200;
             let (checklist, annotation, command, fog_signals) = tokio::join!(
                 async { crate::engine::llm::clean_checklist(&transcript).await.unwrap_or_default() },
-                async { crate::engine::llm::annotate(&transcript, &pairs).await.unwrap_or_default() },
+                async { crate::engine::llm::annotate(&transcript).await.unwrap_or_default() },
                 async {
                     if !wants_command {
                         return None;
@@ -230,16 +183,11 @@ pub async fn organize(
                     crate::engine::llm::parse_command(&transcript)
                         .await
                         .ok()
-                        .filter(|c| c.intent != "unknown")
+                        .filter(|c| c.intent == "create_task")
                 },
-                async {
-                    if !wants_fog {
-                        return Vec::new();
-                    }
-                    crate::engine::llm::fog(&transcript).await.unwrap_or_default()
-                },
+                fog::detect(&transcript),
             );
-            (checklist, annotation, command, fog_signals, None)
+            (checklist, annotation, command, None, fog_signals)
         }
         CaptureMode::Meeting => {
             // Minutes first (map-reduce over the whole call), then the graph
@@ -260,7 +208,15 @@ pub async fn organize(
                     .collect::<Vec<_>>()
                     .join("; "),
             );
-            let mut annotation = crate::engine::llm::annotate(&digest, &pairs).await.unwrap_or_default();
+            // Fog looks at the user's own words only.
+            let mine_said: String = transcript
+                .lines()
+                .filter_map(|l| l.strip_prefix("You: "))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let (annotation, fog_signals) =
+                tokio::join!(crate::engine::llm::annotate(&digest), fog::detect(&mine_said));
+            let mut annotation = annotation.unwrap_or_default();
             annotation.summary = Some(minutes.summary.clone()).filter(|s| !s.is_empty()).or(annotation.summary);
             let mine: Vec<String> = minutes
                 .action_items
@@ -268,7 +224,7 @@ pub async fn organize(
                 .filter(|a| a.is_mine())
                 .map(|a| if a.due.is_empty() { a.task.clone() } else { format!("{} ({})", a.task, a.due) })
                 .collect();
-            (mine, annotation, None, Vec::new(), Some(minutes))
+            (mine, annotation, None, Some(minutes), fog_signals)
         }
     };
 
@@ -281,8 +237,8 @@ pub async fn organize(
     let embed_model = "embeddinggemma-2";
     let vectors = crate::engine::llm::embed(&embed_texts).await.unwrap_or_default();
 
-    // 7) Vector store + graph + tasks (all local).
-    let mut tasks: Vec<TaskRef> = Vec::new();
+    // 7) Vector store + graph (all local).
+    let related: Vec<String>;
     {
         let conn = state
             .db
@@ -322,73 +278,26 @@ pub async fn organize(
             }
         }
 
-        // edges: thought → its entities; thought → related thoughts
+        // edges: thought → its entities
         for (id, _) in &entity_ids {
             let _ = graph::upsert_edge(&conn, &thought_id, id, "involves");
         }
-        for rel in &annotation.related {
-            if rel != &thought_id {
-                let _ = graph::upsert_edge(&conn, &thought_id, rel, "relates_to");
+
+        // thought → fog pattern (one hub per kind, so repeats connect)
+        for f in &fog_signals {
+            if let Ok(Some(id)) = graph::upsert_entity(&conn, embed_model, "fog", &fog::label(&f.tag), "negative", None) {
+                let _ = graph::upsert_edge(&conn, &thought_id, &id, "fog");
             }
         }
-
-        // The cleaned checklist goes straight onto Today, skipping anything
-        // already open. (The annotator's task list only feeds the graph.)
-        let mut seen: std::collections::HashSet<String> = db::get_tasks(&conn, false)
-            .unwrap_or_default()
-            .iter()
-            .map(|t| task_key(&t.title))
-            .collect();
-        let command_task = command
-            .as_ref()
-            .filter(|c| c.intent == "create_task")
-            .and_then(|c| c.title.as_deref())
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-        for title in checklist.iter().cloned().chain(command_task) {
-            if !seen.insert(task_key(&title)) {
-                continue;
-            }
-            let task = db::Task {
-                id: Uuid::new_v4().to_string(),
-                title: title.clone(),
-                project: None,
-                thought_id: Some(thought_id.clone()),
-                done: false,
-                created_at: chrono::Utc::now().to_rfc3339(),
-            };
-            if db::insert_task(&conn, &task).is_ok() {
-                tasks.push(TaskRef { id: task.id, title });
-            }
-        }
-
-        // Fog signals → meta (today's slice, capped) for the Today brief.
         if !fog_signals.is_empty() {
-            let day = time::local_day_key();
-            let mut sigs: Vec<serde_json::Value> =
-                db::get_meta(&conn, "fog_today")
-                    .ok()
-                    .flatten()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default();
-            sigs.retain(|v| v["day"].as_str() == Some(day.as_str()));
-            for f in &fog_signals {
-                sigs.push(serde_json::json!({
-                    "day": day,
-                    "tag": f.tag,
-                    "context": f.context,
-                    "intensity": f.intensity,
-                    "question": f.question,
-                }));
-            }
-            sigs.truncate(10);
-            let _ = db::set_meta(
-                &conn,
-                "fog_today",
-                &serde_json::to_string(&sigs).unwrap_or_default(),
+            let _ = conn.execute(
+                "UPDATE thoughts SET fog = ?2 WHERE id = ?1",
+                rusqlite::params![thought_id, serde_json::to_string(&fog_signals).unwrap_or_default()],
             );
         }
+
+        // thought ↔ similar earlier thoughts, by EmbeddingGemma 2
+        related = crate::engine::links::link_similar(&conn, &thought_id).unwrap_or_default();
 
         if let Some(m) = &minutes {
             let _ = conn.execute(
@@ -406,19 +315,31 @@ pub async fn organize(
         }
     }
 
-    // Passage index for memory search (keyword-only if embedding fails).
+    // 8) The checklist goes straight onto Today; duplicates of open tasks
+    // (exact or by meaning) are skipped. The annotator's tasks only feed the graph.
+    let command_task = command
+        .as_ref()
+        .and_then(|c| c.title.as_deref())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    let titles: Vec<String> = checklist.iter().cloned().chain(command_task).collect();
+    let tasks = crate::engine::tasks::add_unique(&state, titles, Some(thought_id.clone()))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[tasks] add failed: {e}");
+            Vec::new()
+        });
+
+    // Passage index for memory search.
     if let Err(e) = crate::engine::search::index_thought(&state, &thought_id, &transcript).await {
         eprintln!("[search] indexing failed: {e}");
     }
 
     state.emit("thoughts-updated", &serde_json::json!({}));
     state.emit("tasks-updated", &serde_json::json!({}));
-    state.emit(
-        "capture-complete",
-        &serde_json::json!({ "thoughtId": thought_id }),
-    );
+    // `capture-complete` (with the full result) is emitted by audio::session.
     stage(&state, "done");
-    crate::commands::today::refresh_brief_in_background(state.clone());
 
     Ok(CaptureResult {
         thought_id,
@@ -427,7 +348,8 @@ pub async fn organize(
         tasks,
         topics: annotation.topics,
         people: annotation.people,
-        related: annotation.related,
+        related,
+        fog: fog_signals,
         command,
         duration_secs,
         mode,
@@ -440,8 +362,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn task_key_ignores_case_and_punctuation() {
-        assert_eq!(task_key("Call Priya."), task_key("call   priya"));
-        assert_ne!(task_key("Call Priya"), task_key("Call Rahul"));
+    fn command_prefilter() {
+        assert!(looks_like_command("Remind me to call the bank"));
+        assert!(!looks_like_command("Today was a long day, lots of meetings"));
     }
 }

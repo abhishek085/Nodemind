@@ -1,389 +1,344 @@
-// Today: one screen for the day — a friction insight, the checklist,
-// focus blocks, and what the calendar already owns.
+// Today: your checklist, grouped by the thought it came from, next to a
+// timeline of what you captured today and what the calendar holds.
+//
+// Everything here is factual — no AI commentary. Tasks arrive already
+// de-duplicated (engine/tasks.rs); this view only shows and edits them.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "../lib/api";
-import type {
-  CalendarEvent,
-  FocusSession,
-  Task,
-  TodayBrief,
-} from "../lib/types";
+import { LivePartial } from "../components/capture";
+import { FogList, FogTag } from "../components/fog";
+import type { CalendarEvent, Today, TodayTask, TodayThought } from "../lib/types";
 
 interface Props {
-  refreshKey: number; // bumped on capture-complete / task events
+  refreshKey: number; // bumped on capture-complete
+}
+
+function clock(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
 export default function TodayView({ refreshKey }: Props) {
-  const [brief, setBrief] = useState<TodayBrief | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [today, setToday] = useState<Today | null>(null);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [permissionHint, setPermissionHint] = useState<string | null>(null);
-  const [focus, setFocus] = useState<FocusSession[]>([]);
-  const [activeFocus, setActiveFocus] = useState<FocusSession | null>(null);
-  const [now, setNow] = useState(Date.now());
+  const [calendarHint, setCalendarHint] = useState<string | null>(null);
 
-  const loadTasks = useCallback(() => {
-    void api
-      .getTasks(false)
-      .then(setTasks)
-      .catch(() => setTasks([]));
-  }, []);
-
-  const loadFocus = useCallback(() => {
-    void api
-      .getFocusToday()
-      .then((sessions) => {
-        setFocus(sessions);
-        setActiveFocus(sessions.find((s) => s.endedAt === null) ?? null);
-      })
-      .catch(() => setFocus([]));
-  }, []);
-
-  // Full refresh: calendar first so the brief sees today's events. The brief
-  // itself is cached per day by the backend, so opening Today is instant;
-  // task and focus events refresh just their own card.
   const load = useCallback(() => {
-    loadTasks();
-    loadFocus();
+    void api.getToday().then(setToday).catch(() => undefined);
+  }, []);
+
+  const loadCalendar = useCallback(() => {
     void api
       .syncCalendar()
       .then((s) => {
         setEvents(s.events);
-        setPermissionHint(s.permissionHint);
+        setCalendarHint(s.permissionHint);
       })
-      .catch(() => setEvents([]))
-      .finally(() => {
-        void api
-          .getTodayBrief()
-          .then(setBrief)
-          .catch(() => setBrief(null));
-      });
-  }, [loadTasks, loadFocus]);
+      .catch(() => setEvents([]));
+  }, []);
 
   useEffect(load, [load, refreshKey]);
+  useEffect(loadCalendar, [loadCalendar, refreshKey]);
 
-  // 1s clock for the focus countdown.
-  const clockRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!activeFocus) return;
-    clockRef.current = window.setInterval(() => setNow(Date.now()), 1000);
+    const subs = [api.on<unknown>("tasks-updated", load), api.on<unknown>("thoughts-updated", load)];
     return () => {
-      if (clockRef.current !== null) window.clearInterval(clockRef.current);
+      for (const un of subs) void un.then((f) => f());
     };
-  }, [activeFocus]);
+  }, [load]);
 
-  // Live refresh from backend events. (No `calendar-synced` listener: this
-  // view's own sync emits it, which used to re-trigger `load` in a loop.)
-  useEffect(() => {
-    const un1 = api.on<unknown>("tasks-updated", loadTasks);
-    const un2 = api.on<unknown>("focus-updated", loadFocus);
-    // A fresh insight is generated in the background after each capture.
-    const un3 = api.on<TodayBrief>("today-brief", setBrief);
-    return () => {
-      void un1.then((f) => f());
-      void un2.then((f) => f());
-      void un3.then((f) => f());
-    };
-  }, [loadTasks, loadFocus]);
-
-  const startFocus = async () => {
-    try {
-      const started = await api.startFocus(25);
-      const session: FocusSession = {
-        id: started.id,
-        title: null,
-        day: new Date().toISOString().slice(0, 10),
-        startedAt: started.startedAt,
-        endedAt: null,
-        minutes: started.minutes,
-      };
-      setActiveFocus(session);
-      setFocus((prev) => [session, ...prev.filter((s) => s.endedAt !== null)]);
-    } catch (e) {
-      alert(String(e));
-    }
-  };
-
-  const finishFocus = async () => {
-    if (!activeFocus) return;
-    const elapsed = Math.round(
-      (Date.now() - new Date(activeFocus.startedAt).getTime()) / 60000,
-    );
-    try {
-      await api.finishFocus(activeFocus.id, Math.max(elapsed, 0));
-      setActiveFocus(null); // `focus-updated` refreshes the list
-    } catch (e) {
-      alert(String(e));
-    }
-  };
-
-  const toggleTask = async (t: Task) => {
-    await api.updateTask(t.id, null, !t.done);
-    setTasks((prev) => prev.filter((x) => x.id !== t.id || !t.done));
-  };
-
-  const removeTask = async (t: Task) => {
-    await api.deleteTask(t.id);
-    setTasks((prev) => prev.filter((x) => x.id !== t.id));
-  };
+  const date = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="mx-auto grid max-w-4xl grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* brief + focus, left column */}
-        <div className="space-y-4">
-          {brief && (brief.friction || brief.suggestion) && (
-            <section className="rounded-2xl bg-surface p-5 shadow-sm backdrop-blur-xl fade-up">
-              <h3 className="mb-2 flex items-center gap-2 text-sm font-bold">
-                <span className="text-base">✦</span> Your friction
-              </h3>
-              {brief.friction && (
-                <p className="text-[13px] leading-relaxed text-ink">{brief.friction}</p>
-              )}
-              {brief.suggestion && (
-                <p className="mt-2 rounded-lg bg-accent/8 px-3 py-2 text-xs text-ink-2">
-                  <span className="font-semibold text-accent">Next step: </span>
-                  {brief.suggestion}
-                </p>
-              )}
-            </section>
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-5">
+          <h2 className="text-xl font-bold">{date}</h2>
+          {today && (
+            <p className="mt-0.5 text-xs text-ink-3">
+              {plural(today.tasks.length, "open task")} · {plural(today.thoughts.length, "thought")} today
+              {events.length > 0 && ` · ${plural(events.length, "event")}`}
+            </p>
           )}
+        </header>
 
-          <FocusCard
-            active={activeFocus}
-            now={now}
-            sessions={focus}
-            onStart={startFocus}
-            onFinish={finishFocus}
-          />
-        </div>
-
-        {/* checklist + calendar, right column */}
-        <div className="space-y-4">
-          <TaskCard tasks={tasks} onToggle={toggleTask} onRemove={removeTask} onRefresh={loadTasks} />
-          <CalendarCard events={events} hint={permissionHint} onResync={load} />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
+          <div className="lg:col-span-3">
+            <Checklist tasks={today?.tasks ?? []} onChanged={load} />
+          </div>
+          <div className="space-y-4 lg:col-span-2">
+            <StuckCard thoughts={today?.thoughts ?? []} />
+            <Thoughts thoughts={today?.thoughts ?? []} onChanged={load} />
+            <CalendarCard events={events} hint={calendarHint} onResync={loadCalendar} />
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// ── focus ───────────────────────────────────────────────────────────────────
+// ── checklist ───────────────────────────────────────────────────────────────
 
-function FocusCard({
-  active,
-  now,
-  sessions,
-  onStart,
-  onFinish,
-}: {
-  active: FocusSession | null;
-  now: number;
-  sessions: FocusSession[];
-  onStart: () => void;
-  onFinish: () => void;
-}) {
-  const total = sessions.reduce((s, x) => s + x.minutes, 0);
+interface Group {
+  key: string;
+  label: string;
+  tasks: TodayTask[];
+}
 
-  let remaining = 0;
-  let totalSecs = 25 * 60;
-  if (active) {
-    const started = new Date(active.startedAt).getTime();
-    totalSecs = Math.max(60, Math.round((now - started) / 1000));
-    remaining = active.minutes * 60 - Math.round((now - started) / 1000);
+/** Tasks grouped by the capture they came from, newest capture first. */
+function groupTasks(tasks: TodayTask[]): Group[] {
+  const groups = new Map<string, Group>();
+  for (const t of tasks) {
+    const key = t.source?.thoughtId ?? "typed";
+    if (!groups.has(key)) {
+      const s = t.source;
+      const label = !s
+        ? "Added by you"
+        : s.kind === "meeting"
+          ? `From meeting · ${s.title}`
+          : `From your ${clock(s.startedAt)} note${isToday(s.startedAt) ? "" : ` (${shortDay(s.startedAt)})`}`;
+      groups.set(key, { key, label, tasks: [] });
+    }
+    groups.get(key)!.tasks.push(t);
   }
-  const pct = active ? Math.max(0, Math.min(100, (remaining / (active.minutes * 60)) * 100)) : 0;
-
-  return (
-    <section className="rounded-2xl bg-surface p-5 shadow-sm backdrop-blur-xl fade-up">
-      <div className="mb-3 flex items-baseline justify-between">
-        <h3 className="text-sm font-bold">Focus</h3>
-        <span className="text-[11px] text-ink-3">
-          {total > 0 ? `${Math.round(total)} min logged today` : "nothing logged yet"}
-        </span>
-      </div>
-
-      {active ? (
-        <div className="flex items-center gap-4">
-          <div className="relative h-16 w-16 shrink-0">
-            <svg viewBox="0 0 36 36" className="h-16 w-16 -rotate-90">
-              <circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--line)" strokeWidth="3" />
-              <circle
-                cx="18"
-                cy="18"
-                r="15.9"
-                fill="none"
-                stroke="var(--accent)"
-                strokeWidth="3"
-                strokeDasharray={`${pct} 100`}
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="absolute inset-0 flex items-center justify-center text-[11px] font-bold tabular-nums">
-              {fmtCountdown(Math.max(0, remaining))}
-            </span>
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold">In a focus block</p>
-            <p className="mt-0.5 text-[11px] text-ink-3">
-              {Math.round(totalSecs / 60)} min in · {active.minutes}-min block
-            </p>
-          </div>
-          <button
-            onClick={onFinish}
-            className="rounded-xl bg-ok px-4 py-2 text-xs font-semibold text-white hover:opacity-90"
-          >
-            Finish
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={onStart}
-          className="w-full rounded-xl border border-line bg-surface-2 py-3 text-sm font-semibold text-ink-2 transition-colors hover:border-accent hover:text-accent"
-        >
-          ▶ Start a 25-minute focus block
-        </button>
-      )}
-    </section>
-  );
+  return [...groups.values()];
 }
 
-function fmtCountdown(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+function isToday(iso: string): boolean {
+  return new Date(iso).toDateString() === new Date().toDateString();
 }
 
-// ── tasks ───────────────────────────────────────────────────────────────────
+function shortDay(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
-function TaskCard({
-  tasks,
-  onToggle,
-  onRemove,
-  onRefresh,
-}: {
-  tasks: Task[];
-  onToggle: (t: Task) => void;
-  onRemove: (t: Task) => void;
-  onRefresh: () => void;
-}) {
+function Checklist({ tasks, onChanged }: { tasks: TodayTask[]; onChanged: () => void }) {
   const [title, setTitle] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
 
   const add = async () => {
     const t = title.trim();
     if (t.length < 2) return;
-    try {
-      await api.addTask(t);
-      setTitle("");
-      onRefresh();
-    } catch (e) {
-      alert(String(e));
-    }
+    const added = await api.addTask(t).catch(() => null);
+    setTitle("");
+    setNote(added ? null : "Already on your list");
+    onChanged();
+  };
+
+  // Tick → strike through briefly → gone.
+  const complete = async (id: string) => {
+    setLeaving((s) => new Set(s).add(id));
+    await api.updateTask(id, null, true).catch(() => undefined);
+    window.setTimeout(onChanged, 450);
+  };
+
+  const remove = async (id: string) => {
+    await api.deleteTask(id).catch(() => undefined);
+    onChanged();
+  };
+
+  const groups = groupTasks(tasks);
+
+  return (
+    <section className="rounded-2xl bg-surface p-5 shadow-sm fade-up">
+      <h3 className="mb-3 text-sm font-bold">Checklist</h3>
+      <input
+        value={title}
+        onChange={(e) => {
+          setTitle(e.target.value);
+          setNote(null);
+        }}
+        onKeyDown={(e) => e.key === "Enter" && void add()}
+        placeholder="Add a task and press Enter"
+        className="w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-[13px] outline-none placeholder:text-ink-3 focus:border-accent"
+      />
+      {note && <p className="mt-1.5 text-[11px] text-ink-3">{note}</p>}
+
+      {groups.length === 0 ? (
+        <p className="py-8 text-center text-xs text-ink-3">
+          Nothing on your list. Hold <kbd className="font-mono">⌥⇧Space</kbd> and talk it out.
+        </p>
+      ) : (
+        <div className="mt-4 space-y-4">
+          {groups.map((g) => (
+            <div key={g.key}>
+              <p className="mb-1.5 truncate text-[11px] font-medium uppercase tracking-wide text-ink-3">{g.label}</p>
+              <ul className="space-y-0.5">
+                {g.tasks.map((t) => {
+                  const done = leaving.has(t.id);
+                  return (
+                    <li key={t.id} className="group flex items-center gap-3 rounded-lg px-1 py-1.5 hover:bg-surface-2">
+                      <button
+                        onClick={() => void complete(t.id)}
+                        className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border text-[10px] transition-colors ${
+                          done ? "border-ok bg-ok text-white" : "border-line-strong text-transparent hover:border-ok"
+                        }`}
+                        title="Done"
+                      >
+                        ✓
+                      </button>
+                      {editing === t.id ? (
+                        <input
+                          autoFocus
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          onBlur={() => {
+                            if (editTitle.trim().length >= 2 && editTitle.trim() !== t.title)
+                              void api.updateTask(t.id, editTitle.trim(), null).then(onChanged);
+                            setEditing(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            if (e.key === "Escape") setEditing(null);
+                          }}
+                          className="min-w-0 flex-1 rounded-md border border-accent bg-surface px-2 py-0.5 text-[13px] outline-none"
+                        />
+                      ) : (
+                        <span
+                          onDoubleClick={() => {
+                            setEditing(t.id);
+                            setEditTitle(t.title);
+                          }}
+                          className={`min-w-0 flex-1 text-[13px] transition-colors ${done ? "text-ink-3 line-through" : "text-ink"}`}
+                          title="Double-click to edit"
+                        >
+                          {t.title}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => void remove(t.id)}
+                        className="text-xs text-ink-3 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                        title="Delete"
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── where you're stuck ──────────────────────────────────────────────────────
+
+/** Today's fog, newest first, each with the question that unsticks it. */
+function StuckCard({ thoughts }: { thoughts: TodayThought[] }) {
+  const items = thoughts.flatMap((t) => (t.fog ?? []).map((f) => ({ f, at: t.startedAt })));
+  if (items.length === 0) return null;
+  return (
+    <section className="rounded-2xl bg-surface p-5 shadow-sm fade-up">
+      <h3 className="mb-1 text-sm font-bold">Where you're stuck</h3>
+      <p className="mb-3 text-[11px] text-ink-3">Patterns in how you talked today — answer the question to get moving.</p>
+      <FogList signals={items.map((i) => i.f)} when={(i) => clock(items[i].at)} />
+    </section>
+  );
+}
+
+// ── today's thoughts ────────────────────────────────────────────────────────
+
+function Thoughts({ thoughts, onChanged }: { thoughts: TodayThought[]; onChanged: () => void }) {
+  const [open, setOpen] = useState<string | null>(null);
+
+  const remove = async (t: TodayThought) => {
+    if (!window.confirm(`Delete this ${t.kind === "meeting" ? "meeting" : "note"} and its ${plural(t.taskCount, "task")}?`)) return;
+    await api.deleteThought(t.id).catch(() => undefined);
+    setOpen(null);
+    onChanged();
   };
 
   return (
-    <section className="rounded-2xl bg-surface p-5 shadow-sm backdrop-blur-xl fade-up">
-      <div className="mb-3 flex items-baseline justify-between">
-        <h3 className="text-sm font-bold">Checklist</h3>
-        <span className="text-[11px] text-ink-3">{tasks.length} open</span>
-      </div>
-
-      <div className="mb-2 flex gap-2">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void add()}
-          placeholder="Add a task…"
-          className="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs outline-none placeholder:text-ink-3 focus:border-accent"
-        />
-        <button
-          onClick={() => void add()}
-          disabled={title.trim().length < 2}
-          className="rounded-lg bg-accent px-3 text-xs font-semibold text-white disabled:opacity-40"
-        >
-          Add
-        </button>
-      </div>
-
-      <ul className="space-y-1.5">
-        {tasks.map((t) => (
-          <li key={t.id} className="group flex items-center gap-2.5">
-            <button
-              onClick={() => void onToggle(t)}
-              className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-md border text-[10px] transition-colors ${
-                t.done
-                  ? "border-ok bg-ok text-white"
-                  : "border-line-strong text-transparent hover:border-accent"
-              }`}
-              title={t.done ? "Mark as open" : "Mark done"}
-            >
-              ✓
-            </button>
-            {editing === t.id ? (
-              <input
-                autoFocus
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                onBlur={() => {
-                  if (editTitle.trim().length >= 2)
-                    void api.updateTask(t.id, editTitle.trim(), null);
-                  setEditing(null);
-                  onRefresh();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  if (e.key === "Escape") setEditing(null);
-                }}
-                className="min-w-0 flex-1 rounded-md border border-accent bg-surface-2 px-2 py-0.5 text-xs outline-none"
-              />
-            ) : (
-              <button
-                onDoubleClick={() => {
-                  setEditing(t.id);
-                  setEditTitle(t.title);
-                }}
-                className={`min-w-0 flex-1 truncate text-left text-[13px] ${
-                  t.done ? "text-ink-3 line-through" : "text-ink-2"
+    <section className="rounded-2xl bg-surface p-5 shadow-sm fade-up">
+      <h3 className="mb-3 text-sm font-bold">Today's thoughts</h3>
+      {thoughts.length === 0 ? (
+        <p className="py-4 text-center text-xs text-ink-3">Nothing captured yet today.</p>
+      ) : (
+        <ol className="relative space-y-1 border-l border-line pl-4">
+          {thoughts.map((t) => (
+            <li key={t.id} className="relative">
+              <span
+                className={`absolute -left-[21px] top-3 h-2.5 w-2.5 rounded-full border-2 border-surface ${
+                  t.kind === "meeting" ? "bg-accent-2" : "bg-accent"
                 }`}
-                title={`${t.title} (double-click to rename)`}
+              />
+              <button
+                onClick={() => setOpen(open === t.id ? null : t.id)}
+                className="block w-full rounded-lg px-2 py-2 text-left hover:bg-surface-2"
               >
-                {t.title}
+                <p className="text-[11px] text-ink-3">
+                  {clock(t.startedAt)} · {t.kind === "meeting" ? "Meeting" : "Note"} ·{" "}
+                  {Math.max(1, Math.round(t.durationSecs / 60))} min
+                  {t.taskCount > 0 && ` · ${plural(t.taskCount, "task")}`}
+                </p>
+                <p className="mt-0.5 text-[13px] font-medium leading-snug text-ink">{t.title}</p>
+                {(t.fog ?? []).length > 0 && (
+                  <span className="mt-1 inline-flex gap-1">
+                    {(t.fog ?? []).map((f, i) => (
+                      <FogTag key={i} tag={f.tag} />
+                    ))}
+                  </span>
+                )}
               </button>
-            )}
-            {t.project && (
-              <span className="hidden rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-ink-3 lg:inline">
-                {t.project}
-              </span>
-            )}
-            <button
-              onClick={() => void onRemove(t)}
-              className="text-ink-3 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
-              title="Delete"
-            >
-              ✕
-            </button>
-          </li>
-        ))}
-        {tasks.length === 0 && (
-          <li className="py-2 text-center text-xs text-ink-3">
-            Nothing open — either a good day, or a brain-dump away from one.
-          </li>
-        )}
-      </ul>
+              {open === t.id && (
+                <div className="mb-2 space-y-2 px-2 pb-2">
+                  {t.minutes ? (
+                    <>
+                      {t.minutes.summary && <p className="text-xs leading-relaxed text-ink-2">{t.minutes.summary}</p>}
+                      {t.minutes.decisions.length > 0 && (
+                        <div>
+                          <p className="text-[11px] font-semibold text-ink-3">Decisions</p>
+                          <ul className="list-disc pl-4 text-xs text-ink-2">
+                            {t.minutes.decisions.map((d, i) => (
+                              <li key={i}>{d}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {t.minutes.actionItems.length > 0 && (
+                        <div>
+                          <p className="text-[11px] font-semibold text-ink-3">Action items</p>
+                          <ul className="text-xs text-ink-2">
+                            {t.minutes.actionItems.map((a, i) => (
+                              <li key={i}>
+                                <span className="font-medium text-ink">{a.owner || "You"}:</span> {a.task}
+                                {a.due && <span className="text-ink-3"> · {a.due}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+                  <details className="text-xs text-ink-3" open={!t.minutes}>
+                    <summary className="cursor-pointer">Transcript</summary>
+                    <LivePartial text={t.text} className="mt-1 max-h-48" />
+                  </details>
+                  <button onClick={() => void remove(t)} className="text-[11px] text-ink-3 hover:text-danger">
+                    Delete
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
     </section>
   );
 }
 
 // ── calendar ────────────────────────────────────────────────────────────────
-
-function eventTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso.slice(0, 16);
-  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
 
 function CalendarCard({
   events,
@@ -394,44 +349,23 @@ function CalendarCard({
   hint: string | null;
   onResync: () => void;
 }) {
-  const scheduled = events.reduce((sum, e) => {
-    const s = new Date(e.start).getTime();
-    const en = new Date(e.end).getTime();
-    return Number.isNaN(s) || Number.isNaN(en) ? sum : sum + (en - s) / 3600000;
-  }, 0);
-
   return (
-    <section className="rounded-2xl bg-surface p-5 shadow-sm backdrop-blur-xl fade-up">
+    <section className="rounded-2xl bg-surface p-5 shadow-sm fade-up">
       <div className="mb-3 flex items-baseline justify-between">
         <h3 className="text-sm font-bold">Calendar</h3>
-        <button
-          onClick={onResync}
-          className="text-[11px] font-medium text-ink-3 hover:text-accent"
-          title="Re-sync Apple Calendar"
-        >
-          {scheduled > 0 ? `≈ ${Math.round(scheduled)} h scheduled` : "re-sync"}
+        <button onClick={onResync} className="text-[11px] font-medium text-ink-3 hover:text-accent">
+          Refresh
         </button>
       </div>
-      {hint && (
-        <p className="mb-2 rounded-lg bg-warn/10 px-3 py-2 text-[11px] leading-relaxed text-ink-2">
-          {hint}
-        </p>
-      )}
+      {hint && <p className="mb-2 rounded-lg bg-warn/10 px-3 py-2 text-[11px] leading-relaxed text-ink-2">{hint}</p>}
       <ul className="space-y-1.5">
         {events.map((e) => (
           <li key={e.id} className="flex items-baseline gap-2.5">
-            <span className="w-14 shrink-0 text-[11px] tabular-nums text-ink-3">
-              {eventTime(e.start)}
-            </span>
+            <span className="w-16 shrink-0 text-[11px] tabular-nums text-ink-3">{clock(e.start)}</span>
             <span className="min-w-0 flex-1 truncate text-[13px] text-ink-2">{e.title}</span>
-            <span className="shrink-0 text-[10px] text-ink-3">{e.calendar}</span>
           </li>
         ))}
-        {events.length === 0 && !hint && (
-          <li className="py-2 text-center text-xs text-ink-3">
-            Nothing on the calendar today.
-          </li>
-        )}
+        {events.length === 0 && !hint && <li className="py-2 text-center text-xs text-ink-3">Nothing on the calendar today.</li>}
       </ul>
     </section>
   );

@@ -19,8 +19,12 @@ pub struct UpdateInfo {
 
 /// Check the release endpoint for a newer signed build.
 /// Returns `None` when up to date (or the endpoint is unreachable).
+/// Skipped in dev builds, which can't install updates anyway.
 #[tauri::command]
 pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>> {
+    if cfg!(debug_assertions) {
+        return Ok(None);
+    }
     let updater = app.updater().map_err(|e| crate::error::Error::Engine(e.to_string()))?;
     match updater.check().await {
         Ok(Some(update)) => {

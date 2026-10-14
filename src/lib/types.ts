@@ -21,7 +21,6 @@ export interface EngineStatus {
   arch: string;
   chatRunning: boolean;
   embedRunning: boolean;
-  coreml: boolean;
   models: ModelStatusView[];
   error: string | null;
 }
@@ -51,9 +50,8 @@ export interface TaskRef {
 }
 
 export interface CommandIntent {
-  intent: "create_task" | "start_focus" | "unknown";
+  intent: "create_task" | "unknown";
   title: string | null;
-  minutes: number | null;
 }
 
 export interface CaptureResult {
@@ -69,6 +67,8 @@ export interface CaptureResult {
   mode: CaptureMode;
   /** Meeting mode only. */
   minutes?: MeetingMinutes;
+  /** Where the thinking seemed stuck; empty for clear speech. */
+  fog: FogSignal[];
 }
 
 export interface ActionItem {
@@ -97,6 +97,18 @@ export interface Thought {
   startedAt: string; // RFC3339
   durationSecs: number;
   createdAt: string;
+  kind: "note" | "meeting";
+  /** JSON of MeetingMinutes (meetings only). */
+  minutes: string | null;
+  /** JSON of FogSignal[] (when any were found). */
+  fog: string | null;
+}
+
+/** Where the thinking seemed stuck (engine/fog.rs). */
+export interface FogSignal {
+  tag: "overthinking" | "unclarity" | "abstraction" | "overwhelmed" | string;
+  context: string;
+  question: string;
 }
 
 export interface Task {
@@ -175,29 +187,31 @@ export interface CalendarSync {
   permissionHint: string | null;
 }
 
-export interface TodayBrief {
-  friction: string | null;
-  suggestion: string | null;
-  openTasks: number;
-  thoughtsToday: number;
-  eventsToday: number;
-  scheduledHours: number;
-  focusMinutes: number;
-}
-
-export interface FocusSession {
-  id: string;
-  title: string | null;
+/** The Today screen in one payload (see commands/thoughts.rs `get_today`). */
+export interface Today {
   day: string;
-  startedAt: string;
-  endedAt: string | null;
-  minutes: number;
+  tasks: TodayTask[];
+  thoughts: TodayThought[];
 }
 
-export interface FocusStarted {
+export interface TodayTask {
   id: string;
+  title: string;
+  createdAt: string;
+  /** The capture it came from; typed tasks have none. */
+  source: { thoughtId: string; kind: "note" | "meeting"; title: string; startedAt: string } | null;
+}
+
+export interface TodayThought {
+  id: string;
+  kind: "note" | "meeting";
   startedAt: string;
-  minutes: number;
+  durationSecs: number;
+  title: string;
+  text: string;
+  minutes: MeetingMinutes | null;
+  fog: FogSignal[] | null;
+  taskCount: number;
 }
 
 // ── Settings / updates ──────────────────────────────────────────────────────

@@ -26,11 +26,3 @@ pub async fn begin_setup(state: State<'_, Arc<AppState>>) -> Result<()> {
     Ok(())
 }
 
-/// Re-verify models and (re)start the sidecars.
-#[tauri::command]
-pub async fn restart_engine(state: State<'_, Arc<AppState>>) -> Result<()> {
-    let s = state.inner().clone();
-    crate::engine::shutdown(&s);
-    crate::engine::boot(s);
-    Ok(())
-}

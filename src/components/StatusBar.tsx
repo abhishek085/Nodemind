@@ -23,11 +23,6 @@ export default function StatusBar({ status, viewTitle }: Props) {
       <div className="no-drag flex items-center gap-2">
         <span className={`h-2 w-2 rounded-full ${meta.dot}`} />
         <span className="text-xs font-medium text-ink-2">{meta.label}</span>
-        {status?.coreml && phase === "ready" && (
-          <span className="rounded-full bg-ok/15 px-2 py-0.5 text-[10px] font-semibold text-ok">
-            CoreML
-          </span>
-        )}
       </div>
       <span className="no-drag ml-auto text-xs font-semibold tracking-wide text-ink-3">
         {viewTitle}

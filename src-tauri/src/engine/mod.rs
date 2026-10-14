@@ -5,13 +5,19 @@
 //! - [`llm`]      — chat + embeddings over llama-server's OpenAI-compatible API.
 //! - [`pipeline`] — organize a transcript: checklist + graph + search index.
 //! - [`meeting`]  — You/Them transcript assembly and meeting minutes.
+//! - [`fog`]      — where thinking is stuck (cue-gated, model + rules).
+//! - [`links`]    — mind-map links by EmbeddingGemma 2 similarity; junk filter.
 //! - [`search`]   — hybrid (EmbeddingGemma 2 + keyword) search over transcripts.
+//! - [`tasks`]    — the checklist's single entry point, with duplicate detection.
 
+pub mod fog;
+pub mod links;
 pub mod llm;
 pub mod meeting;
 pub mod pipeline;
 pub mod search;
 pub mod sidecar;
+pub mod tasks;
 pub mod whisper;
 
 use std::sync::Arc;
@@ -66,6 +72,8 @@ pub fn boot(state: Arc<AppState>) {
             state.model_error.lock().unwrap().take();
             eprintln!("[engine] ✓ ready ({})", crate::models::host_arch());
             search::backfill_in_background(state.clone());
+            tasks::dedupe_in_background(state.clone());
+            links::refresh_in_background(state.clone());
         } else {
             let msg = if !chat_ok {
                 "chat model server failed to start — see app logs".to_string()

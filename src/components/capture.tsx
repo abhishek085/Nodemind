@@ -3,6 +3,7 @@
 
 import { useState, type ReactNode } from "react";
 import * as api from "../lib/api";
+import { FogCard } from "./fog";
 import type { ActionItem, CaptureMode, CaptureResult, CaptureStage } from "../lib/types";
 
 export function fmtClock(s: number): string {
@@ -225,6 +226,16 @@ function AddedTasks({ result, onChange, heading }: Omit<BodyProps, "compact"> & 
   );
 }
 
+/** Compact "Show transcript" for the popover result. */
+export function TranscriptToggle({ text }: { text: string }) {
+  return (
+    <details className="mt-3 text-left text-xs text-ink-3">
+      <summary className="cursor-pointer">Show transcript</summary>
+      <LivePartial text={text} className="mt-2 max-h-48" />
+    </details>
+  );
+}
+
 function TranscriptDetails({ result }: { result: CaptureResult }) {
   return (
     <details className="text-xs text-ink-3">
@@ -258,6 +269,7 @@ function MinutesBody({ result, onChange, compact }: BodyProps) {
           </ul>
         </div>
       )}
+      <FogCard signals={result.fog ?? []} />
       {result.tasks.length > 0 ? (
         <AddedTasks result={result} onChange={onChange} heading="Your action items, added to Today" />
       ) : (
@@ -283,14 +295,6 @@ function MinutesBody({ result, onChange, compact }: BodyProps) {
 
 /** Brain-dump result: summary, tasks on Today, what joined the mind map. */
 function NoteBody({ result, onChange, compact }: BodyProps) {
-  const startFocus = async () => {
-    try {
-      await api.startFocus(result.command?.minutes ?? undefined);
-    } catch (e) {
-      alert(String(e));
-    }
-  };
-
   return (
     <div className="space-y-4 text-left">
       {result.summary && (
@@ -300,13 +304,14 @@ function NoteBody({ result, onChange, compact }: BodyProps) {
         </p>
       )}
 
+      <FogCard signals={result.fog ?? []} />
       {result.tasks.length > 0 ? (
         <AddedTasks result={result} onChange={onChange} heading="Added to Today" />
       ) : (
         <p className="text-xs text-ink-3">No tasks in this one — it's saved to your mind map.</p>
       )}
 
-      {(result.topics.length > 0 || result.people.length > 0 || result.command?.intent === "start_focus") && (
+      {(result.topics.length > 0 || result.people.length > 0) && (
         <div className="flex flex-wrap gap-2">
           {result.topics.slice(0, compact ? 4 : 12).map((t) => (
             <Chip key={`t-${t}`} tone="accent">#{t}</Chip>
@@ -314,14 +319,6 @@ function NoteBody({ result, onChange, compact }: BodyProps) {
           {result.people.slice(0, compact ? 3 : 12).map((p) => (
             <Chip key={`p-${p}`} tone="neutral">👤 {p}</Chip>
           ))}
-          {result.command?.intent === "start_focus" && (
-            <button
-              onClick={startFocus}
-              className="rounded-full bg-accent px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
-            >
-              ▶ Start {result.command.minutes ?? 25}-min focus
-            </button>
-          )}
         </div>
       )}
 

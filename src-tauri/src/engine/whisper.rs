@@ -5,9 +5,7 @@
 //! Fallback when the server isn't running:
 //!   wav file → `whisper-cli` → JSON (segments) → text
 //!
-//! The CoreML encoder (`ggml-small-encoder.mlmodelc`, sibling of the model
-//! file) is used automatically when present and the binary was built with
-//! CoreML — otherwise it silently falls back to CPU.
+//! Both run on Metal; the resident server keeps the model loaded.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -251,22 +249,6 @@ fn threads() -> usize {
 
 fn wav_duration_estimate(bytes: u64) -> f64 {
     bytes as f64 / (16_000.0 * 2.0)
-}
-
-/// True when the CoreML encoder sits next to the model file (fast path).
-/// whisper.cpp auto-detects it; this is for status reporting only.
-pub fn coreml_enabled(state: &AppState) -> bool {
-    let Some(model) = state.resolve_model(ModelKey::Whisper) else {
-        return false;
-    };
-    let stem = model
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let dir = model.parent().unwrap_or_else(|| std::path::Path::new("."));
-    dir.join(format!("{stem}-encoder.mlmodelc"))
-        .join("model.mil")
-        .exists()
 }
 
 #[cfg(test)]

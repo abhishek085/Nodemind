@@ -32,6 +32,8 @@ pub struct Thought {
     pub kind: String,
     /// Meeting minutes as JSON (`engine::meeting::Minutes`), meetings only.
     pub minutes: Option<String>,
+    /// Fog signals as JSON (`engine::fog::FogSignal[]`), when any were found.
+    pub fog: Option<String>,
 }
 
 /// A concrete to-do extracted from a thought (or added by hand).
@@ -83,18 +85,6 @@ pub struct CalendarEvent {
     pub day: String,
 }
 
-/// A logged focus session (25-minute style work blocks).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FocusSession {
-    pub id: String,
-    pub title: Option<String>,
-    pub day: String,
-    pub started_at: String,
-    pub ended_at: Option<String>,
-    pub minutes: i64,
-}
-
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 const SCHEMA: &str = r#"
@@ -108,7 +98,8 @@ CREATE TABLE IF NOT EXISTS thoughts (
   duration_secs INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL,
   kind          TEXT NOT NULL DEFAULT 'note',
-  minutes       TEXT
+  minutes       TEXT,
+  fog           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_thoughts_day ON thoughts(day);
 CREATE INDEX IF NOT EXISTS idx_thoughts_created ON thoughts(created_at);
@@ -566,8 +557,8 @@ fn migrate_legacy(conn: &mut Connection) -> Result<()> {
 
 pub fn insert_thought(conn: &Connection, t: &Thought) -> Result<()> {
     conn.execute(
-        "INSERT INTO thoughts (id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO thoughts (id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes, fog)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             t.id,
             t.text,
@@ -578,7 +569,8 @@ pub fn insert_thought(conn: &Connection, t: &Thought) -> Result<()> {
             t.duration_secs,
             t.created_at,
             t.kind,
-            t.minutes
+            t.minutes,
+            t.fog
         ],
     )
     .map_err(|e| crate::error::Error::Store(e.to_string()))?;
@@ -597,13 +589,15 @@ fn thought_from_row(row: &rusqlite::Row) -> SqlResult<Thought> {
         created_at: row.get(7)?,
         kind: row.get(8)?,
         minutes: row.get(9)?,
+        fog: row.get(10)?,
     })
 }
 
 pub const THOUGHT_COLS: &str =
-    "id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes";
+    "id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes, fog";
 
 /// Recent thoughts, newest first.
+#[cfg(test)]
 pub fn get_thoughts(conn: &Connection, limit: i64) -> Result<Vec<Thought>> {
     let mut stmt = conn
         .prepare(&format!("SELECT {THOUGHT_COLS} FROM thoughts ORDER BY created_at DESC LIMIT ?1"))
@@ -797,82 +791,6 @@ pub fn replace_calendar_day(conn: &Connection, day: &str, events: &[CalendarEven
     Ok(())
 }
 
-pub fn get_calendar_day(conn: &Connection, day: &str) -> Result<Vec<CalendarEvent>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, start, end, calendar, day
-             FROM calendar_events WHERE day = ?1 ORDER BY start",
-        )
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    let rows = stmt
-        .query_map(params![day], |r| {
-            Ok(CalendarEvent {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                start: r.get(2)?,
-                end: r.get(3)?,
-                calendar: r.get(4)?,
-                day: r.get(5)?,
-            })
-        })
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    rows.collect::<SqlResult<Vec<_>>>()
-        .map_err(|e| crate::error::Error::Store(e.to_string()))
-}
-
-// ── Focus sessions ──────────────────────────────────────────────────────────
-
-pub fn insert_focus(conn: &Connection, s: &FocusSession) -> Result<()> {
-    conn.execute(
-        "INSERT INTO focus_sessions (id, title, day, started_at, ended_at, minutes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![s.id, s.title, s.day, s.started_at, s.ended_at, s.minutes],
-    )
-    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    Ok(())
-}
-
-pub fn finish_focus(conn: &Connection, id: &str, ended_at: &str, minutes: i64) -> Result<()> {
-    conn.execute(
-        "UPDATE focus_sessions SET ended_at = ?2, minutes = ?3 WHERE id = ?1",
-        params![id, ended_at, minutes],
-    )
-    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    Ok(())
-}
-
-pub fn get_focus_today(conn: &Connection, day: &str) -> Result<Vec<FocusSession>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, day, started_at, ended_at, minutes
-             FROM focus_sessions WHERE day = ?1 ORDER BY started_at",
-        )
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    let rows = stmt
-        .query_map(params![day], |r| {
-            Ok(FocusSession {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                day: r.get(2)?,
-                started_at: r.get(3)?,
-                ended_at: r.get(4)?,
-                minutes: r.get(5)?,
-            })
-        })
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    rows.collect::<SqlResult<Vec<_>>>()
-        .map_err(|e| crate::error::Error::Store(e.to_string()))
-}
-
-pub fn focus_minutes_today(conn: &Connection, day: &str) -> i64 {
-    conn.query_row(
-        "SELECT COALESCE(SUM(minutes), 0) FROM focus_sessions WHERE day = ?1 AND ended_at IS NOT NULL",
-        params![day],
-        |r| r.get::<_, i64>(0),
-    )
-    .unwrap_or(0)
-}
-
 // ── Meta ────────────────────────────────────────────────────────────────────
 
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
@@ -930,6 +848,7 @@ mod tests {
             created_at: "2026-10-13T10:00:00Z".into(),
             kind: "note".into(),
             minutes: None,
+            fog: None,
         };
         insert_thought(&conn, &t).unwrap();
         assert_eq!(get_thoughts(&conn, 10).unwrap().len(), 1);
@@ -1047,23 +966,17 @@ mod tests {
         // The rebuilt focus table accepts the new write pattern (nullable
         // title; the v1 NOT NULL date/start_time columns are gone) and the
         // legacy row survived the rebuild.
-        insert_focus(
-            &conn,
-            &FocusSession {
-                id: "f2".into(),
-                title: None,
-                day: "2026-04-02".into(),
-                started_at: "2026-04-02T09:00:00Z".into(),
-                ended_at: None,
-                minutes: 0,
-            },
+        conn.execute(
+            "INSERT INTO focus_sessions (id, title, day, started_at, ended_at, minutes)
+             VALUES ('f2', NULL, '2026-04-02', '2026-04-02T09:00:00Z', NULL, 0)",
+            [],
         )
         .unwrap();
-        assert_eq!(get_focus_today(&conn, "2026-04-02").unwrap().len(), 1);
         // The legacy row kept its data across the column rename (date → day).
-        let legacy_focus = get_focus_today(&conn, "2026-04-01").unwrap();
-        assert_eq!(legacy_focus.len(), 1);
-        assert_eq!(legacy_focus[0].title.as_deref(), Some("Legacy focus"));
+        let legacy_title: Option<String> = conn
+            .query_row("SELECT title FROM focus_sessions WHERE day = '2026-04-01'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy_title.as_deref(), Some("Legacy focus"));
         drop(conn);
 
         // Second open: idempotent — no duplicate imports, no re-stamp churn.

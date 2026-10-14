@@ -198,6 +198,24 @@ pub fn upsert_edge(conn: &Connection, from: &str, to: &str, edge_type: &str) -> 
 /// Reserved for the node-editing UI (graph context menu) — not yet exposed
 /// over IPC.
 #[allow(dead_code)]
+/// Insert or overwrite an edge with an explicit weight (computed links,
+/// e.g. EmbeddingGemma similarity — unlike `upsert_edge`, which counts).
+pub fn upsert_weighted_edge(conn: &Connection, from: &str, to: &str, edge_type: &str, weight: f64) -> Result<()> {
+    if from == to || from.is_empty() || to.is_empty() {
+        return Ok(());
+    }
+    // Undirected link types are stored once, in a stable order.
+    let (a, b) = if edge_type == "similar" && to < from { (to, from) } else { (from, to) };
+    conn.execute(
+        "INSERT INTO graph_edges (id, from_node, to_node, edge_type, weight)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET weight = MAX(weight, excluded.weight)",
+        params![format!("{a}|{b}|{edge_type}"), a, b, edge_type, weight.clamp(0.1, 10.0)],
+    )
+    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(())
+}
+
 pub fn delete_node(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM graph_nodes WHERE id = ?1", params![id])
         .map_err(|e| crate::error::Error::Store(e.to_string()))?;

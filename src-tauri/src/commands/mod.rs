@@ -9,5 +9,4 @@ pub mod capture;
 pub mod engine;
 pub mod settings;
 pub mod thoughts;
-pub mod today;
 pub mod updates;

@@ -321,7 +321,7 @@ mod tests {
             db::insert_thought(&conn, &db::Thought {
                 id: id.clone(), text: text.to_string(), summary: None, language: "en".into(),
                 day: "2026-10-14".into(), started_at: "2026-10-14T10:00:00Z".into(),
-                duration_secs: 5, created_at: "2026-10-14T10:00:00Z".into(), kind: "note".into(), minutes: None,
+                duration_secs: 5, created_at: "2026-10-14T10:00:00Z".into(), kind: "note".into(), minutes: None, fog: None,
             }).unwrap();
             let ps = split_passages(text);
             let vs = llm::embed_documents(&ps).await.expect("embed server on 8643");

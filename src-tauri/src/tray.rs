@@ -162,6 +162,26 @@ pub fn setup(app: &mut App, state: Arc<AppState>) -> tauri::Result<()> {
         })
         .build(app)?;
 
+    // Launching shows where Nodemind lives: the popover under the icon. If
+    // macOS hid the icon (notch / crowded menu bar) there is no rect to anchor
+    // to, so open the full window instead — a launch never shows nothing.
+    let handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(700)).await; // let the status item lay out
+        let main_open = handle
+            .get_webview_window(MAIN)
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        if main_open {
+            return; // first-run setup already opened the full window
+        }
+        let rect = handle.tray_by_id(TRAY_ID).and_then(|t| t.rect().ok().flatten());
+        match rect {
+            Some(rect) if rect.size.to_physical::<f64>(1.0).width > 0.0 => show_quick(&handle, rect),
+            _ => show_main(&handle, None),
+        }
+    });
+
     // Keep the menu's status line honest as the engine moves between phases.
     tauri::async_runtime::spawn(async move {
         loop {
@@ -195,6 +215,14 @@ fn toggle_quick(app: &AppHandle, rect: tauri::Rect) {
     if just_hidden {
         return; // this click is what blurred (and hid) it
     }
+    show_quick(app, rect);
+}
+
+/// Anchor the popover under the menu-bar icon and show it.
+fn show_quick(app: &AppHandle, rect: tauri::Rect) {
+    let Some(quick) = app.get_webview_window(QUICK) else {
+        return;
+    };
     let scale = quick.scale_factor().unwrap_or(1.0);
     let icon_pos = rect.position.to_physical::<f64>(scale);
     let icon_size = rect.size.to_physical::<f64>(scale);
