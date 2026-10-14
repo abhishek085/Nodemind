@@ -38,3 +38,10 @@ src-tauri/resources/models/**/*.mlmodelc/coremldata.bin
 !HowItWorks.md
 !Technical_design.md
 .venv
+# NodeMind local-AI assets (built/fetched by scripts/, never committed)
+.sidecar-builds/
+src-tauri/binaries/*
+src-tauri/resources/models/*.gguf
+src-tauri/resources/models/*.bin
+# updater signing key (keep secret) — public key lives in tauri.conf.json
+src-tauri/nodemind.key

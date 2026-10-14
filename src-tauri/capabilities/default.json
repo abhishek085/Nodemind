@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the main window. The Rust backend spawns the bundled sidecars directly; these entries cover the JS-side shells, updater, notifications, and opener.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "notification:default",
+    "updater:default"
+  ]
+}

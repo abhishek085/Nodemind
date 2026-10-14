@@ -5,23 +5,20 @@
 <h1 align="center">Nodemind</h1>
 
 <p align="center">
-  <em>Talk out your messy thoughts. Get a clean checklist.</em>
+  <em>Talk out your messy thoughts. Get a clean mind.</em>
 </p>
 
 <p align="center">
-  A dead-simple <strong>voice&#8209;to&#8209;checklist</strong> tool that runs <strong>100% in your browser</strong>.<br />
-  Free, private, offline — your voice never leaves your device.
+  A voice-first, fully local <strong>personal thinking assistant</strong> for macOS.<br />
+  Speak — in English or Hindi — and Nodemind turns the ramble into a clean checklist,
+  a living thought graph, and a friction-free plan for today.
 </p>
 
 <p align="center">
-  <a href="https://abhishek085.github.io/Nodemind/"><img alt="Open Nodemind" src="https://img.shields.io/badge/▶_Open_Nodemind-6366f1?style=for-the-badge&logoColor=white" /></a>
-</p>
-
-<p align="center">
-  <img alt="Price" src="https://img.shields.io/badge/price-free-34d399?style=flat-square" />
-  <img alt="Privacy" src="https://img.shields.io/badge/runs-100%25_on_device-6366f1?style=flat-square" />
-  <img alt="Install" src="https://img.shields.io/badge/install-none-818cf8?style=flat-square" />
-  <img alt="PWA" src="https://img.shields.io/badge/PWA-installable-fbbf24?style=flat-square" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-6366f1?style=flat-square&logo=apple" />
+  <img alt="Privacy" src="https://img.shields.io/badge/privacy-100%25_offline-34d399?style=flat-square" />
+  <img alt="Engine" src="https://img.shields.io/badge/engine-Whisper_+_Llama_3.2-818cf8?style=flat-square" />
+  <img alt="Stack" src="https://img.shields.io/badge/stack-Tauri_2_+_React_fbbf24?style=flat-square" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" />
 </p>
 
@@ -33,150 +30,107 @@
 
 ## 💡 The idea
 
-You have too many ideas and you keep losing them. Nodemind solves that one thing:
+You have too many half-formed ideas, tasks, and worries bouncing around your head.
+Nodemind gives them a place to land:
 
-> ### 🎤 Tap the mic → ramble → get a clean to-do list.
+1. **🎤 Capture** — tap the mic and brain-dump. Messy is fine. English or Hinglish.
+2. **🧹 Organize** — a local LLM cleans the transcript, extracts tasks, topics, people,
+   and goals, and files them into your mind map.
+3. **🗺️ Map** — everything you've ever said becomes a living graph of thoughts,
+   topics, people, and goals, linked by what they relate to.
+4. **📅 Today** — one screen for the day: a sharp "friction" insight, your checklist,
+   focus blocks, and what your Apple Calendar already owns.
 
-It listens, transcribes your speech, strips the "umm"s and repetition, and turns your rambling into clear, checkable tasks. The twist most tools can't match: **everything runs inside your browser, on your own machine.** Your voice and notes never touch a server.
+There is no account, no cloud, and no telemetry. Your voice is transcribed on your
+Mac by a local Whisper model; the reasoning runs on a local 1B LLM. Nothing you say
+ever leaves this device.
 
----
+## ✨ What you get
+
+- **One-button capture** with a 20-minute session, live "transcribing → organizing" stages
+- **Suggested checklist** — tap to keep the tasks the model heard
+- **Mind map** (React Flow) — thoughts orbit the center; topics, people, and goals ring the outside; search your memory in one keystroke
+- **Direct voice commands** — "remind me to call Sam" or "start a 25-minute focus" are recognized and made actionable
+- **Today view** — friction insight, focus timer with a progress ring, checklist, and calendar sync (read-only, via AppleScript)
+- **Auto-update** — checks GitHub Releases and relaunches into the new build when you approve
+
+## 🧱 How it's built
+
+| Layer | Tech |
+| --- | --- |
+| Shell | [Tauri 2](https://tauri.app) (Rust) + React 19 + Tailwind v4 |
+| Speech→Text | `whisper-cli` (whisper.cpp v1.9.5, Metal, optional CoreML encoder) — bundled sidecar |
+| Reasoning | `llama-server` (llama.cpp b11609, Metal) hosting Llama 3.2 1B Instruct — bundled sidecar |
+| Memory | Local vector store (EmbeddingGemma 2) + SQLite graph store, both in your app-data folder |
+| Calendar | Read-only Apple Calendar via `osascript` (graceful when permission is denied) |
+| Distribution | DMG with all models bundled · signed updater via GitHub Releases |
+
+The two model servers run on loopback (127.0.0.1) only, are spawned by the app, and
+are killed when the app exits.
 
 ## 🚀 Try it
 
-### **→ [abhishek085.github.io/Nodemind](https://abhishek085.github.io/Nodemind/)**
+### Run a prebuilt app
 
-| | |
-|--:|:--|
-| **1.** | Open the link in **Chrome** or **Edge** on a laptop/desktop |
-| **2.** | Click **Set up Nodemind** once — downloads the AI (~1&nbsp;GB, cached after) |
-| **3.** | Tap 🎤 → talk → tap to stop |
-| **4.** | Edit ✏️ / check ✅ / copy ⧉ / delete ✕ your tasks — it saves automatically |
+Download the latest **DMG** from [Releases](https://github.com/abhishek085/Nodemind/releases),
+drag Nodemind into Applications, and launch it. The first launch starts the local
+engine (a few seconds) — everything is bundled, so it works with no internet at all.
 
-> 💡 In Chrome/Edge, click the **install** icon in the address bar to add Nodemind to your dock as a real app. After first setup it works fully **offline**.
+### Build from source
 
----
+Requirements: macOS (Apple Silicon), Xcode CLT, Rust, Node 18+, cmake.
 
-## ⚖️ How it compares
+```sh
+# 1. front-end deps
+npm install
 
-The problem is popular — but every tool makes you give something up. Most are paid, send your voice to the cloud, or only transcribe without organizing. Nodemind is the one corner nobody else fills.
+# 2. fetch the models into src-tauri/resources/models/  (~1.8 GB, one-time)
+./scripts/fetch-models.sh
 
-| | **🧠 Nodemind** | Wispr Flow | AudioPen | Voicenotes | OpenWhispr |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Voice → organized **checklist** | ✅ | ❌ *(dictation only)* | ✅ | ✅ | ❌ *(transcript only)* |
-| **Free** | ✅ | ❌ $15/mo | ❌ $99/yr | ❌ paid | ✅ |
-| Runs **on your device** (private) | ✅ | ❌ cloud | ❌ cloud | ❌ cloud | ✅ |
-| **No install** (just a link) | ✅ | ❌ app | ✅ | ❌ app | ❌ install |
-| **Open source** | ✅ | ❌ | ❌ | ❌ | ✅ |
+# 3. build the whisper.cpp + llama.cpp sidecar binaries
+./scripts/build-sidecars.sh
 
-**Nodemind is the only one that ticks every box.**
-
-### Why it's better
-
-- 🆓 **Free, forever** — no subscriptions, no word-count caps, no "you've hit your limit."
-- 🔒 **Genuinely private** — the AI runs in *your* browser. Cloud tools upload your voice; Nodemind never does.
-- ✅ **Actually organizes** — dictation tools (Wispr Flow) just type what you say; local tools (OpenWhispr) just transcribe. Nodemind turns the mess into a real list.
-- ⚡ **Zero friction** — it's a link, not a download. Nothing to install, no account to create.
-- 🔓 **Open source** — inspect it, fork it, trust it.
-
----
-
-## ✅ Requirements
-
-Running the AI locally is what keeps it free and private — the trade-off is it needs a capable browser and machine.
-
-| | |
-|---|---|
-| **Browser** | Chrome or Edge (recent). Safari's WebGPU support is still partial. |
-| **Device** | Laptop/desktop with ~8&nbsp;GB+ RAM. Phones struggle with the local model. |
-| **First load** | One-time ~1&nbsp;GB model download, cached afterward. |
-| **Internet** | Needed only for that first setup — works offline after. |
-
----
-
-## 🛠️ How it works
-
-A single self-contained HTML page with a fully on-device pipeline — no backend, no server:
-
-```
-🎤 your voice
-   │
-   ▼
-🗣️  Speech → text      Whisper (transformers.js · WebGPU)
-   │
-   ▼
-🧠 Rant → checklist    Llama 3.2 1B (WebLLM · WebGPU)
-   │
-   ▼
-✅ editable checklist  saved in your browser (localStorage)
+# 4. build the app (produces src-tauri/target/release/bundle/dmg/Nodemind_*.dmg)
+export TAURI_SIGNING_PRIVATE_KEY="$PWD/src-tauri/nodemind.key"   # generate: npx tauri signer generate
+npx tauri build
 ```
 
-Every step runs in your browser. The "app" is just static files your device executes.
+For day-to-day development, `npx tauri dev` hot-reloads the UI and reuses the same
+sidecars and models.
 
----
+> **About the signing key** — `src-tauri/nodemind.key` (the updater's *private* key)
+> is git-ignored by design. The public key is embedded in `tauri.conf.json`. If you
+> fork and build, generate your own keypair (`npx tauri signer generate -w src-tauri/nodemind.key --ci`)
+> and update `plugins.updater.pubkey` to match.
 
-## 🔐 Privacy
+## 🔒 Privacy, stated plainly
 
-- No cloud speech-to-text.
-- No hosted LLM — the model runs in your browser.
-- No account, no analytics, no telemetry.
-- Your audio, transcripts, and tasks stay on your device.
+- Audio is buffered in-process, transcribed locally, and discarded after each capture.
+- The SQLite database (thoughts, tasks, graph, vectors, focus sessions) lives in
+  `~/Library/Application Support/com.nokast.nodemind/` — open the folder from Settings.
+- The only network calls the app can make are: the one-time model download on first
+  launch, and the opt-in update check. No analytics, no remote STT, no remote LLM.
 
----
+## 🗂️ Repository layout
 
-## 💻 Run it locally
-
-No build step — it's a static page. The mic and WebGPU need a secure context, which `localhost` provides, so just serve the folder:
-
-```bash
-git clone https://github.com/abhishek085/Nodemind.git
-cd Nodemind
-python3 -m http.server 8000
 ```
-
-Then open **<http://localhost:8000/poc/voice-checklist.html>** in Chrome or Edge. *(Any static server works — e.g. `npx serve`.)*
-
----
-
-## 🧩 Tech stack
-
-- **Speech-to-text:** `whisper-base` via [Transformers.js](https://github.com/huggingface/transformers.js) (WebGPU)
-- **Task cleanup:** [Llama 3.2 1B](https://huggingface.co/meta-llama/Llama-3.2-1B) via [WebLLM](https://github.com/mlc-ai/web-llm) (WebGPU)
-- **App:** one static HTML/CSS/JS file — no framework, no build step
-- **Offline / installable:** Web App Manifest + service worker (PWA)
-- **Hosting:** GitHub Pages (served from the `gh-pages` branch)
-
----
-
-## 📁 Project structure
-
-- [`poc/voice-checklist.html`](poc/voice-checklist.html) — the entire app (UI, voice capture, STT, LLM cleanup, checklist)
-- [`poc/manifest.webmanifest`](poc/manifest.webmanifest) · [`poc/sw.js`](poc/sw.js) — PWA manifest + offline service worker
-- [`HowItWorks.md`](HowItWorks.md) — the pipeline in plain language
-- [`Technical_design.md`](Technical_design.md) — architecture & design principles
-
-> **History:** Nodemind started as a native macOS app (Tauri + Rust + Ollama) before pivoting to this zero-install web app. The original desktop source lives in the project's git history.
-
----
-
-## 🗺️ Roadmap
-
-- [ ] Smart grouping (Today / This week / Someday)
-- [ ] One-tap export to Apple Reminders / Todoist / Notion
-- [ ] Edit-by-voice ("remove the dentist one")
-- [ ] Wider browser support as WebGPU matures
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome. Keep PRs small and focused, and preserve the on-device, no-cloud design.
-
----
-
-## 🌱 About Nokast
-
-Nodemind is built by **Nokast** — tools for messy, fast-moving minds. The goal is simple software that meets you where your thinking actually is: spoken, scattered, and in motion.
+├── src/                    # React UI (views, components, lib)
+│   ├── lib/                # api (IPC wrappers) · audio (16 kHz worklet) · types
+│   ├── views/              # Capture · Graph · Today · Settings
+│   └── components/         # Sidebar · StatusBar · SetupScreen · UpdateBanner
+├── src-tauri/src/
+│   ├── commands/           # the IPC surface the UI talks to
+│   ├── engine/             # sidecar lifecycle · whisper · llm · pipeline · prompts
+│   ├── store/              # sqlite db · graph · brute-force vector kNN
+│   ├── models/             # manifest (sha256-pinned) · resumable downloader
+│   ├── calendar/           # read-only Apple Calendar bridge
+│   └── lib.rs              # window, tray, menu, exit wiring
+├── scripts/
+│   ├── fetch-models.sh     # pinned model downloads (resume + sha256 verify)
+│   └── build-sidecars.sh   # whisper.cpp v1.9.5 + llama.cpp b11609 (Metal, static)
+└── src-tauri/resources/    # prompts.toml + bundled models
+```
 
 ## 📄 License
 
-See [LICENSE](LICENSE). MIT unless noted otherwise for third-party components.
+MIT — see [LICENSE](LICENSE).

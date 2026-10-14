@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+/* ── Nodemind design tokens ────────────────────────────────────────────────
+   macOS-native look: SF system font, glassy surfaces, blue-neutral palette.
+   Semantic colors flip with the system light/dark scheme. */
+:root {
+  --bg: #f2f5fb;
+  --bg-2: #e9eef7;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-2: rgba(255, 255, 255, 0.6);
+  --line: rgba(40, 60, 120, 0.1);
+  --line-strong: rgba(40, 60, 120, 0.2);
+  --ink: #0f1629;
+  --ink-2: #3a4663;
+  --ink-3: #7a88a8;
+  --accent: #4f6ef5;
+  --accent-2: #7c5ce4;
+  --ok: #20c05e;
+  --warn: #f5a623;
+  --danger: #e53e49;
+  --shadow-sm: 0 2px 12px rgba(20, 40, 100, 0.08);
+  --shadow-md: 0 8px 28px rgba(20, 40, 100, 0.11);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1117;
+    --bg-2: #151a23;
+    --surface: rgba(30, 36, 50, 0.78);
+    --surface-2: rgba(30, 36, 50, 0.5);
+    --line: rgba(160, 180, 255, 0.1);
+    --line-strong: rgba(160, 180, 255, 0.22);
+    --ink: #e8ecf8;
+    --ink-2: #aab4d0;
+    --ink-3: #6b7694;
+    --accent: #6b85ff;
+    --accent-2: #9b7ff0;
+    --shadow-sm: 0 2px 12px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 8px 28px rgba(0, 0, 0, 0.45);
+  }
+}
+
+@theme inline {
+  --font-sans: -apple-system, "SF Pro Text", "SF Pro Display", "Helvetica Neue",
+    Arial, sans-serif;
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, "SF Pro Text", "SF Pro Display", "Helvetica Neue",
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-size: 13px;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Overlay title bar drag region (the window uses hiddenTitle + Overlay). */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* React Flow: use the app palette. */
+.react-flow__attribution {
+  display: none;
+}
+
+/* Recording pulse */
+@keyframes nm-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 22px transparent;
+  }
+}
+.rec-pulse {
+  animation: nm-pulse 1.6s ease-out infinite;
+}
+
+@keyframes nm-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-up {
+  animation: nm-fade-up 220ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Thin scrollbars that fit the aesthetic */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
