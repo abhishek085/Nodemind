@@ -46,9 +46,9 @@ npx tauri signer sign "$TARBALL"
 
 REPO="abhishek085/Nodemind"
 MANIFEST="$BUNDLE/nodemind-updater.json"
-python3 - "$VERSION" "$TAG" "$SIG" "$MANIFEST" "$NOTES" <<'PY'
+python3 - "$VERSION" "$TAG" "$SIG" "$MANIFEST" "$NOTES" "$REPO" "$APP_NAME" <<'PY'
 import json, sys, datetime
-version, tag, sig_path, out, notes = sys.argv[1:6]
+version, tag, sig_path, out, notes, repo, app_name = sys.argv[1:8]
 sig = open(sig_path).read().strip()
 doc = {
     "version": version,
@@ -56,7 +56,7 @@ doc = {
     "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "platforms": {
         "darwin-aarch64": {
-            "url": f"https://github.com/{REPO}/releases/download/{tag}/{APP_NAME}.app.tar.gz",
+            "url": f"https://github.com/{repo}/releases/download/{tag}/{app_name}.app.tar.gz",
             "signature": sig,
         }
     },
@@ -64,7 +64,6 @@ doc = {
 open(out, "w").write(json.dumps(doc, indent=2) + "\n")
 print(f"manifest → {out}")
 PY
-REPO="abhishek085/Nodemind"
 
 echo "▸ publishing $TAG"
 gh release create "$TAG" \
