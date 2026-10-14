@@ -76,6 +76,12 @@ Download the latest **DMG** from [Releases](https://github.com/abhishek085/Nodem
 drag Nodemind into Applications, and launch it. The first launch starts the local
 engine (a few seconds) — everything is bundled, so it works with no internet at all.
 
+> **First launch on a Mac that didn't build it** — the app is ad-hoc signed, not
+> Apple-notarized, so Gatekeeper will warn on the very first open of a downloaded
+> copy: right-click the app → **Open** → **Open** again, and approve it once in
+> System Settings → Privacy & Security. Later launches (and in-app updates) are
+> seamless.
+
 ### Build from source
 
 Requirements: macOS (Apple Silicon), Xcode CLT, Rust, Node 18+, cmake.
