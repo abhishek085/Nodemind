@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nodemind: talk it out, get a checklist</title>
+<meta name="description" content="Nodemind is a free Mac app that turns a spoken brain-dump into a clean checklist and a map of your thoughts. Speech and AI run entirely on your Mac.">
+<meta property="og:title" content="Nodemind: talk it out, get a checklist">
+<meta property="og:description" content="Ramble for a minute in English or Hinglish. Nodemind turns it into a checklist and a mind map, entirely on your Mac.">
+<meta property="og:image" content="https://raw.githubusercontent.com/abhishek085/Nodemind/main/public/nodemind_icon.png">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232A6DFF'/%3E%3Cpath d='M32 32 18 20M32 32h16M32 32 18 44' stroke='white' stroke-width='5' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='32' r='7' fill='white'/%3E%3Ccircle cx='48' cy='32' r='5' fill='%2300C4B4'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F5F7FB; --surface:#FFFFFF; --ink:#111827; --muted:#5B6474; --line:#DCE2EC;
+  --blue:#2A6DFF; --blue-ink:#1D4FD1; --teal:#00A99B; --teal-soft:#D5F5F1; --amber:#C98512;
+  --display:"Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --body:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1424; --surface:#131C30; --ink:#E7ECF5; --muted:#98A3B8; --line:#24304A;
+    --blue:#5B8DFF; --blue-ink:#8DB0FF; --teal:#2ED3C3; --teal-soft:#0F3B3A; --amber:#F2B34B; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1424; --surface:#131C30; --ink:#E7ECF5; --muted:#98A3B8; --line:#24304A;
+  --blue:#5B8DFF; --blue-ink:#8DB0FF; --teal:#2ED3C3; --teal-soft:#0F3B3A; --amber:#F2B34B; color-scheme: dark;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+html,body{overflow-x:clip}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 var(--body);font-variant-numeric:tabular-nums}
+a{color:var(--blue-ink)}
+:focus-visible{outline:3px solid var(--blue);outline-offset:2px;border-radius:4px}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+@media (max-width:640px){.wrap{padding:0 16px}}
+
+/* nav */
+nav{display:flex;align-items:center;gap:24px;padding:20px 0}
+.mark{display:flex;align-items:center;gap:10px;font:800 20px/1 var(--display);letter-spacing:-.02em;color:var(--ink);text-decoration:none}
+.mark svg{width:28px;height:28px}
+.mark b{color:var(--teal);font-weight:800}
+nav .links{display:flex;gap:20px;margin-left:auto;align-items:center;font-size:15px}
+nav .links a{color:var(--muted);text-decoration:none}
+nav .links a:hover{color:var(--ink)}
+.gh{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)!important;padding:7px 12px;border-radius:999px}
+.theme{background:none;border:1px solid var(--line);color:var(--muted);border-radius:999px;padding:6px 10px;cursor:pointer;font:inherit;font-size:14px}
+@media (max-width:760px){nav .links a.hide-sm{display:none}}
+@media (max-width:520px){.gh .gh-label{display:none}.gh{padding:7px 9px}nav{gap:12px}}
+
+/* hero */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:48px;align-items:center;padding:48px 0 24px}
+.hero>*{min-width:0}
+@media (max-width:960px){.hero{grid-template-columns:minmax(0,1fr);gap:36px;padding-top:28px}}
+h1{font:700 clamp(36px,5vw,60px)/1.03 var(--display);letter-spacing:-.035em;margin:0 0 22px;max-width:14ch;text-wrap:balance}
+.lead{font-size:18px;line-height:1.6;margin:0 0 28px;max-width:52ch;color:var(--muted)}
+.lead em{font-style:normal;color:var(--ink)}
+.cta{display:flex;flex-wrap:wrap;align-items:center;gap:14px 22px}
+.btn{display:inline-flex;align-items:center;gap:10px;background:var(--blue);color:#fff;text-decoration:none;font:600 16px/1 var(--body);padding:15px 22px;border-radius:12px}
+.btn:hover{background:var(--blue-ink)}
+.btn svg{width:18px;height:18px}
+.req{font:13px/1.55 var(--mono);color:var(--muted)}
+
+/* demo panel: what one capture produces */
+.demo{background:#0B1222;color:#D8E1F2;border-radius:16px;padding:22px;border:1px solid #1E2A44}
+.demo .label{font:500 12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:#7D8BA6;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+.rec{width:8px;height:8px;border-radius:50%;background:#FF6B66;animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.rec{animation:none}}
+.said{margin:0 0 18px;font-size:15px;line-height:1.65;color:#A9B6CF}
+.said mark{background:none;color:#fff}
+.out{background:#060B17;border:1px solid #1E2A44;border-radius:12px;padding:16px}
+.out ul{list-style:none;margin:0 0 14px;padding:0}
+.out li{display:flex;gap:10px;align-items:flex-start;padding:6px 0;font-size:15px;color:#fff}
+.box{flex:none;width:16px;height:16px;margin-top:4px;border:1.5px solid #5B8DFF;border-radius:4px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:500 12px/1 var(--body);padding:6px 10px;border-radius:999px;background:#16233F;color:#9DB8FF}
+.chip.t{background:#0F3B3A;color:#2ED3C3}
+
+/* sections */
+section{padding:56px 0 0}
+h2{font:700 clamp(26px,3vw,36px)/1.15 var(--display);letter-spacing:-.025em;margin:0 0 14px}
+.sub{color:var(--muted);margin:0 0 28px;max-width:62ch}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+@media (max-width:960px){.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.grid4{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px}
+.card .n{font:500 13px/1 var(--mono);color:var(--blue)}
+.card h3{font:600 19px/1.25 var(--display);margin:10px 0 6px;letter-spacing:-.01em}
+.card p{margin:0;color:var(--muted);font-size:15px}
+
+.tbl{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:14px}
+table{width:100%;border-collapse:collapse;min-width:520px}
+th{text-align:left;font:500 12px var(--mono);color:var(--muted);padding:14px 16px 10px;border-bottom:1px solid var(--line)}
+td{padding:14px 16px;border-bottom:1px solid var(--line);font-size:15px;vertical-align:middle}
+tr:last-child td{border-bottom:0}
+td.t{font:500 20px/1 var(--mono);white-space:nowrap;color:var(--teal)}
+td small{display:block;color:var(--muted);font-size:13px}
+.note{font:13px/1.6 var(--mono);color:var(--muted);margin:12px 0 0}
+
+/* install + privacy, side by side */
+.two{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:24px;align-items:start}
+@media (max-width:900px){.two{grid-template-columns:minmax(0,1fr)}}
+.install{background:#0B1222;color:#D8E1F2;border-radius:16px;padding:26px;border:1px solid #1E2A44}
+.install h2{color:#fff}
+.steps{list-style:none;counter-reset:step;margin:0;padding:0}
+.steps li{counter-increment:step;position:relative;padding:16px 0 0 40px}
+.steps li::before{content:counter(step);position:absolute;left:0;top:16px;width:26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;font:700 14px/26px var(--display);text-align:center}
+.steps h3{font:600 17px/1.3 var(--display);margin:2px 0 4px;color:#fff}
+.steps p{margin:0;color:#A9B6CF;font-size:15px}
+.steps kbd{font:13px var(--mono);background:#16233F;border:1px solid #2A3756;border-radius:6px;padding:1px 6px;color:#D8E1F2}
+.privacy ul{margin:0;padding:0;list-style:none}
+.privacy li{padding:14px 0;border-bottom:1px solid var(--line)}
+.privacy li:last-child{border-bottom:0}
+.privacy b{display:block;font:600 16px/1.3 var(--display);margin-bottom:2px}
+.privacy span{color:var(--muted);font-size:15px}
+
+/* faq */
+details.q{border-top:1px solid var(--line)}
+details.q:last-of-type{border-bottom:1px solid var(--line)}
+details.q summary{cursor:pointer;padding:16px 0;font:600 17px/1.3 var(--display);list-style:none;display:flex;justify-content:space-between;gap:16px}
+details.q summary::-webkit-details-marker{display:none}
+details.q summary::after{content:"+";color:var(--muted);font-weight:400}
+details.q[open] summary::after{content:"–"}
+details.q p{margin:0 0 18px;color:var(--muted);max-width:70ch}
+
+.final{text-align:center;padding:72px 0 0}
+.final h2{margin-bottom:20px}
+.final .cta{justify-content:center}
+
+footer{margin:96px 0 0;padding:28px 0 48px;border-top:1px solid var(--line);color:var(--muted);font-size:14px;display:flex;gap:20px;flex-wrap:wrap}
+footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav aria-label="Main">
+    <a class="mark" href="#top" aria-label="Nodemind home">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#2A6DFF"/><path d="M32 32 18 20M32 32h16M32 32 18 44" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="32" r="7" fill="#fff"/><circle cx="48" cy="32" r="5" fill="#00C4B4"/></svg>
+      <span>node<b>mind</b></span>
+    </a>
+    <div class="links">
+      <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#speed">Speed</a>
+      <a class="hide-sm" href="#install">Install</a>
+      <a class="hide-sm" href="#faq">FAQ</a>
+      <button class="theme" id="theme" type="button" aria-label="Toggle dark mode">◐</button>
+      <a class="gh" href="https://github.com/abhishek085/Nodemind"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span class="gh-label">Star on GitHub</span></a>
+    </div>
+  </nav>
+
+  <main id="top">
+    <header class="hero">
+      <div>
+        <h1>Talk it out. Get a checklist.</h1>
+        <p class="lead">Hold <em>⌥⇧Space</em> anywhere and ramble about everything on your mind.
+          Nodemind turns it into <em>a clean to-do list and a map of your thoughts</em>.
+          Speech and AI run entirely on your Mac, so nothing you say leaves it.</p>
+        <div class="cta">
+          <a class="btn" href="https://github.com/abhishek085/Nodemind/releases/latest/download/Nodemind-macOS.dmg">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+            Download for Mac (free)
+          </a>
+          <span class="req">v1.0 · Apple Silicon (M1 or newer)<br>AI models (1.6 GB) download once, then it works offline</span>
+        </div>
+      </div>
+
+      <div class="demo" aria-label="Example of one capture">
+        <p class="label"><span class="rec" aria-hidden="true"></span>You said · 0:41</p>
+        <p class="said">“Okay so… tomorrow I need to <mark>call Priya about the invoice</mark>, it's overdue.
+          The <mark>slides for Monday</mark> still aren't done. Remind me to <mark>email Rahul about the contract</mark>
+          before Friday. Oh and the <mark>car needs servicing</mark>, I keep forgetting…”</p>
+        <p class="label">Nodemind made</p>
+        <div class="out">
+          <ul>
+            <li><span class="box" aria-hidden="true"></span>Call Priya about the overdue invoice</li>
+            <li><span class="box" aria-hidden="true"></span>Finish the slides for Monday</li>
+            <li><span class="box" aria-hidden="true"></span>Email Rahul about the contract renewal by Friday</li>
+            <li><span class="box" aria-hidden="true"></span>Book a car service</li>
+          </ul>
+          <div class="chips">
+            <span class="chip t">#work</span><span class="chip t">#errands</span>
+            <span class="chip">Priya</span><span class="chip">Rahul</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section id="how">
+      <h2>How it works</h2>
+      <p class="sub">It lives in your menu bar. No typing, no formatting, no account.</p>
+      <div class="grid4">
+        <div class="card"><span class="n">01</span><h3>Capture</h3><p>Hold ⌥⇧Space or click the menu-bar icon and brain-dump. Words appear as you talk.</p></div>
+        <div class="card"><span class="n">02</span><h3>Organize</h3><p>Tasks go straight onto your Today list. Topics, people and goals join your mind map.</p></div>
+        <div class="card"><span class="n">03</span><h3>Search</h3><p>Find anything you've said by meaning. "Car stuff" finds "the car needs servicing".</p></div>
+        <div class="card"><span class="n">04</span><h3>Meetings</h3><p>On a call? Nodemind notes what you <em>and</em> they said, then writes the minutes. Your action items land on Today.</p></div>
+      </div>
+    </section>
+
+    <section id="speed">
+      <h2>How fast?</h2>
+      <p class="sub">Everything runs on your Mac's own chip. Speech is transcribed at every pause while you talk, so there's almost nothing left to do when you stop.</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>Step</th><th>Model</th><th>Time after you stop</th></tr></thead>
+          <tbody>
+            <tr><td>Speech to text</td><td>Whisper small <small>whisper.cpp, Metal, live at each pause</small></td><td class="t">~0.2 s</td></tr>
+            <tr><td>Checklist, topics, people</td><td>Llama 3.2 1B <small>llama.cpp, Metal, 4 passes in parallel</small></td><td class="t">~2–4 s</td></tr>
+            <tr><td>Search index</td><td>EmbeddingGemma 2 <small>semantic memory search</small></td><td class="t">&lt; 0.1 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Measured on an M4 Pro MacBook with a 65-second English recording: each 8–12 s piece transcribes in ~0.24 s while you're still talking. Older Macs take longer.</p>
+    </section>
+
+    <section>
+      <div class="two">
+        <div class="install" id="install">
+          <h2>Install</h2>
+          <ol class="steps">
+            <li><h3>Download</h3><p>Get <b>Nodemind-macOS.dmg</b> from the button above.</p></li>
+            <li><h3>Drag to Applications</h3><p>Open the DMG and drag Nodemind into your Applications folder.</p></li>
+            <li><h3>Open it the first time</h3><p>Nodemind isn't notarized by Apple yet, so the first time, <kbd>right-click</kbd> the app → <b>Open</b> → <b>Open</b>. After that it opens normally.</p></li>
+            <li><h3>Let it set up</h3><p>Nodemind downloads its AI models once (1.6 GB), then lives in your menu bar. Approve the microphone the first time you record.</p></li>
+          </ol>
+        </div>
+        <div class="privacy">
+          <h2>Private by design</h2>
+          <ul>
+            <li><b>No account, no cloud</b><span>There's nothing to sign up for and no server that sees your words.</span></li>
+            <li><b>Audio never leaves your Mac</b><span>Recordings are transcribed locally, then discarded.</span></li>
+            <li><b>Your data, in one folder</b><span>Thoughts and tasks live in a local database you can open, back up or delete.</span></li>
+            <li><b>Open source</b><span>MIT-licensed. Read every line on GitHub.</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq">
+      <h2>Questions</h2>
+      <details class="q"><summary>Do I need internet?</summary><p>Only once, to download the AI models on first launch. After that Nodemind works fully offline; the only other network call is an optional check for updates.</p></details>
+      <details class="q"><summary>Which languages does it understand?</summary><p>English, and Hinglish (Hindi mixed with English). Switch to Hinglish under the mic button. Your checklist is always written in English.</p></details>
+      <details class="q"><summary>Does it work on Intel Macs?</summary><p>Not yet. Nodemind needs an Apple Silicon Mac (M1 or newer).</p></details>
+      <details class="q"><summary>How do meeting notes work?</summary><p>Click "Take meeting notes" in the menu bar before a call. Nodemind records your mic and the call audio playing on your Mac separately, so it knows who said what, with no bot joining your call. When you stop, it writes a summary, decisions and action items, all on your Mac. Needs macOS 14.2 or newer; headphones give the cleanest notes. Let others know you're taking notes.</p></details>
+      <details class="q"><summary>Is it really free?</summary><p>Yes, and open source under the MIT license. There's no paid tier.</p></details>
+      <details class="q"><summary>How do updates work?</summary><p>Nodemind checks GitHub for new versions and asks before installing one.</p></details>
+    </section>
+
+    <section class="final">
+      <h2>Clear your head in a minute.</h2>
+      <div class="cta">
+        <a class="btn" href="https://github.com/abhishek085/Nodemind/releases/latest/download/Nodemind-macOS.dmg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+          Download for Mac (free)
+        </a>
+        <span class="req"><a href="https://github.com/abhishek085/Nodemind/releases">All releases</a></span>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Nodemind is a <a href="https://nokast.substack.com">Nokast</a> tool for privacy-first, open-source AI.</span>
+    <a href="https://github.com/abhishek085/Nodemind">Source</a>
+    <a href="https://github.com/abhishek085/Nodemind/releases">Releases</a>
+    <a href="https://github.com/abhishek085/Nodemind/issues">Report a bug</a>
+  </footer>
+</div>
+
+<script>
+// Theme toggle (same behaviour as modexai): remembered per browser.
+(function () {
+  const root = document.documentElement, key = "nodemind-theme";
+  try { const t = localStorage.getItem(key); if (t) root.dataset.theme = t; } catch (e) {}
+  document.getElementById("theme").addEventListener("click", function () {
+    const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem(key, root.dataset.theme); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
