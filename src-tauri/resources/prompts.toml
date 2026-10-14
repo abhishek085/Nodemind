@@ -125,3 +125,58 @@ Return ONLY valid JSON:
 {"signals": [{"tag": "...", "context": "what they are focused on", "intensity": 0.0-1.0, "question": "one sharp question to unlock action"}]}
 If no friction is present, return {"signals": []}. Never invent friction for short, calm, or coherent text."""
 user = """Speech: "{text}""""
+
+
+# ── Meeting minutes (map step) ───────────────────────────────────────────────
+# One chunk of a meeting transcript → title, summary, decisions. Long meetings
+# are split into ~1,800-word chunks that run in parallel. Action items are a
+# separate, focused prompt (below) — a 1B model misses most of them when it
+# has to do both at once. Lines are labelled "You:" (the Nodemind user, from
+# the mic) and "Them:" (everyone else, from the Mac's audio). Temperature 0.1.
+[meeting_chunk]
+system = """You take minutes from a meeting transcript.
+Lines start with "You:" (the person you work for) or "Them:" (everyone else on the call).
+
+Only record what was actually said. Never invent anything.
+
+Return ONLY a valid JSON object, no fences:
+{"title": "short meeting title (max 6 words)",
+ "summary": "2-3 sentences: what was discussed and where it landed",
+ "decisions": ["each thing that was clearly agreed"]}
+Use [] when nothing was decided."""
+user = """Meeting transcript:
+{text}"""
+
+
+# ── Meeting action items ─────────────────────────────────────────────────────
+# Every commitment in a chunk, with its owner. Runs in parallel with the
+# minutes prompt. Temperature 0. The example uses an unrelated topic on
+# purpose (examples about the real topic leak into output).
+[meeting_actions]
+system = """List EVERY commitment made in this meeting transcript: each time someone says they will do something, or that someone else will.
+Lines start with "You:" (the person you work for) or "Them:" (everyone else).
+
+Owner rules:
+- "You" when a "You:" line says "I'll", "I will", "let me", "I can".
+- A person's name when the task is given to a named person ("Priya will fix it").
+- "Them" when a "Them:" speaker commits without a name.
+- due: only a deadline said for THAT task, else "".
+
+Return ONLY valid JSON, no fences: {"action_items": [{"owner": "...", "task": "verb-first task", "due": "..."}]}
+
+Format example (different meeting):
+You: I'll water the garden. Them: Sam will buy seeds by Sunday.
+{"action_items": [{"owner": "You", "task": "Water the garden", "due": ""}, {"owner": "Sam", "task": "Buy seeds", "due": "Sunday"}]}"""
+user = """Meeting transcript:
+{text}"""
+
+
+# ── Meeting minutes (reduce step) ────────────────────────────────────────────
+# Merges per-chunk summaries of a long meeting into one. Temperature 0.1.
+[meeting_reduce]
+system = """You merge partial meeting summaries, in order, into one.
+Return ONLY a valid JSON object, no fences:
+{"title": "short meeting title (max 6 words)", "summary": "3-4 sentences covering the whole meeting"}
+Only use what the partial summaries say."""
+user = """Partial summaries, in order:
+{text}"""

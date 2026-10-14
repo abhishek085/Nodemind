@@ -134,6 +134,22 @@ pub async fn embed(texts: &[String]) -> Result<Vec<Vec<f32>>, Error> {
     Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
 }
 
+/// Embed passages for retrieval, with EmbeddingGemma's document prefix.
+pub async fn embed_documents(texts: &[String]) -> Result<Vec<Vec<f32>>, Error> {
+    let prefixed: Vec<String> = texts.iter().map(|t| format!("title: none | text: {t}")).collect();
+    embed(&prefixed).await
+}
+
+/// Embed a search query, with EmbeddingGemma's retrieval-query prefix.
+/// (The prefixes widened the right-vs-runner-up margin ~25% in our tests.)
+pub async fn embed_query(query: &str) -> Result<Vec<f32>, Error> {
+    embed(&[format!("task: search result | query: {query}")])
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Engine("embed server returned no vector".into()))
+}
+
 // ── High-level prompt runners ───────────────────────────────────────────────
 
 /// Extract the first balanced JSON object from a model response, tolerating
@@ -149,17 +165,13 @@ pub fn extract_json(raw: &str) -> Option<serde_json::Value> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
         return Some(v);
     }
+    // Parse the first complete value starting at the first '{' and ignore
+    // whatever follows it (commentary, a second object, stray fences).
     let start = s.find('{')?;
-    let end = rfind('}', &s[start..])? + start;
-    let candidate = &s[start..=end];
-    serde_json::from_str(candidate).ok()
-}
-
-fn rfind(c: char, s: &str) -> Option<usize> {
-    s.char_indices()
-        .rev()
-        .find(|(_, ch)| *ch == c)
-        .map(|(i, _)| i + c.len_utf8())
+    serde_json::Deserializer::from_str(&s[start..])
+        .into_iter::<serde_json::Value>()
+        .next()?
+        .ok()
 }
 
 /// Brain-dump → checklist. The flagship prompt; returns the task strings.
@@ -399,6 +411,19 @@ mod tests {
         let raw = "Here is the list: {\"tasks\": [\"one\"]} hope that helps";
         let v = extract_json(raw).unwrap();
         assert_eq!(v["tasks"][0].as_str(), Some("one"));
+    }
+
+    #[test]
+    fn extracts_json_ending_the_response() {
+        // Regression: a closing brace as the very last byte used to panic.
+        let raw = "Minutes: {\"title\": \"Beta\", \"decisions\": [\"Ship Wednesday\"]}";
+        assert_eq!(extract_json(raw).unwrap()["title"].as_str(), Some("Beta"));
+    }
+
+    #[test]
+    fn extracts_first_of_two_objects() {
+        let raw = "{\"a\": 1}\n{\"b\": 2}";
+        assert_eq!(extract_json(raw).unwrap()["a"].as_i64(), Some(1));
     }
 
     #[test]

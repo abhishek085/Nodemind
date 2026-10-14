@@ -47,8 +47,12 @@ ever leaves this device.
 
 ## ✨ What you get
 
-- **One-button capture** with a 20-minute session, live "transcribing → organizing" stages
-- **Suggested checklist** — tap to keep the tasks the model heard
+- **Lives in the menu bar** — click the icon to record and review; the full window opens only for the mind map, Today and settings
+- **Hold-to-talk hotkey** — hold <kbd>⌥⇧Space</kbd> anywhere (or tap to start/stop); the result arrives as a notification
+- **Live transcription** — speech is transcribed at each pause while you talk, so the transcript is ready ~0.2 s after you stop
+- **Meeting notes** — records you (mic) and the call (your Mac's audio output) separately, so every line is labelled *You* / *Them*; when you stop, the local model writes minutes — summary, decisions, action items — and yours land on Today. Works with Zoom, Meet, Teams, anything playing on the Mac (macOS 14.2+)
+- **Checklist straight to Today** — cleaned tasks are added automatically (duplicates skipped); undo any that are wrong
+- **Search by meaning** — EmbeddingGemma 2 finds what you said even in different words ("car maintenance" → "the car needs servicing"), with a boost for exact names; <kbd>⌘K</kbd>
 - **Mind map** (React Flow) — thoughts orbit the center; topics, people, and goals ring the outside; search your memory in one keystroke
 - **Direct voice commands** — "remind me to call Sam" or "start a 25-minute focus" are recognized and made actionable
 - **Today view** — friction insight, focus timer with a progress ring, checklist, and calendar sync (read-only, via AppleScript)
@@ -59,11 +63,12 @@ ever leaves this device.
 | Layer | Tech |
 | --- | --- |
 | Shell | [Tauri 2](https://tauri.app) (Rust) + React 19 + Tailwind v4 |
-| Speech→Text | `whisper-cli` (whisper.cpp v1.9.5, Metal, optional CoreML encoder) — bundled sidecar |
+| Speech→Text | `whisper-server` (whisper.cpp v1.9.5, Metal) kept loaded for live, per-pause transcription; `whisper-cli` fallback — bundled sidecars |
 | Reasoning | `llama-server` (llama.cpp b11609, Metal) hosting Llama 3.2 1B Instruct — bundled sidecar |
-| Memory | Local vector store (EmbeddingGemma 2) + SQLite graph store, both in your app-data folder |
-| Calendar | Read-only Apple Calendar via `osascript` (graceful when permission is denied) |
-| Distribution | DMG with all models bundled · signed updater via GitHub Releases |
+| Memory & search | EmbeddingGemma 2 vectors per transcript passage (semantic search + graph linking) + SQLite graph store, all in your app-data folder |
+| Calendar | Read-only via EventKit (all accounts, instant), AppleScript fallback |
+| macOS bridge | `nodemind-helper` (Swift) — EventKit calendar + Core Audio system-audio tap for meeting mode |
+| Distribution | Small DMG; models (~1.6 GB) download once on first launch · signed updater via GitHub Releases |
 
 The two model servers run on loopback (127.0.0.1) only, are spawned by the app, and
 are killed when the app exits.
@@ -73,8 +78,8 @@ are killed when the app exits.
 ### Run a prebuilt app
 
 Download the latest **DMG** from [Releases](https://github.com/abhishek085/Nodemind/releases),
-drag Nodemind into Applications, and launch it. The first launch starts the local
-engine (a few seconds) — everything is bundled, so it works with no internet at all.
+drag Nodemind into Applications, and launch it. The first launch downloads the
+local AI models once (~1.6 GB); after that Nodemind works with no internet at all.
 
 > **First launch on a Mac that didn't build it** — the app is ad-hoc signed, not
 > Apple-notarized, so Gatekeeper will warn on the very first open of a downloaded
@@ -90,13 +95,11 @@ Requirements: macOS (Apple Silicon), Xcode CLT, Rust, Node 18+, cmake.
 # 1. front-end deps
 npm install
 
-# 2. fetch the models into src-tauri/resources/models/  (~1.8 GB, one-time)
-./scripts/fetch-models.sh
-
-# 3. build the whisper.cpp + llama.cpp sidecar binaries
+# 2. build the whisper.cpp + llama.cpp sidecar binaries
 ./scripts/build-sidecars.sh
 
-# 4. build the app (produces src-tauri/target/release/bundle/dmg/Nodemind_*.dmg)
+# 3. build the app (produces src-tauri/target/release/bundle/dmg/Nodemind_*.dmg)
+#    The models download on first launch, as for users.
 export TAURI_SIGNING_PRIVATE_KEY="$PWD/src-tauri/nodemind.key"   # generate: npx tauri signer generate
 npx tauri build
 ```

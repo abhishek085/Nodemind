@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
 use tauri::State;
 
 use crate::error::Result;
@@ -103,48 +102,14 @@ pub fn get_graph(state: State<'_, Arc<AppState>>, limit: Option<u32>) -> Result<
     graph::get_graph(&conn, limit.unwrap_or(300) as i64)
 }
 
-/// Semantic search over stored thoughts (vector kNN).
+/// Semantic search (EmbeddingGemma 2) over everything you've said:
+/// the best-matching passage per thought.
 #[tauri::command]
-pub async fn search_thoughts(
+pub async fn search_memory(
     state: State<'_, Arc<AppState>>,
     query: String,
     k: Option<u32>,
-) -> Result<Vec<ThoughtHit>> {
-    if query.trim().len() < 2 {
-        return Ok(Vec::new());
-    }
-    let query = query.trim().to_string();
-    let k = k.unwrap_or(8) as usize;
-    let vecs = crate::engine::llm::embed(&[query])
-        .await
-        .map_err(|e| crate::error::Error::Engine(e.message()))?;
-    let Some(q) = vecs.into_iter().next() else {
-        return Ok(Vec::new());
-    };
-
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = state.db.lock().map_err(|_| crate::error::Error::Store("db".into()))?;
-        let hits = crate::store::vec_::knn(&conn, "embeddinggemma-2", Some("thought"), &q, k)
-            .map_err(|e| crate::error::Error::Store(e.message()))?;
-        let mut out = Vec::new();
-        for h in hits {
-            if let Ok(Some(t)) = db::get_thought(&conn, &h.ref_id) {
-                out.push(ThoughtHit {
-                    thought: t,
-                    score: h.score,
-                });
-            }
-        }
-        Ok(out)
-    })
-    .await
-    .map_err(|e| crate::error::Error::Store(format!("search task: {e}")))?
+) -> Result<Vec<crate::engine::search::SearchHit>> {
+    crate::engine::search::search(state.inner(), &query, k.unwrap_or(12) as usize).await
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThoughtHit {
-    pub thought: Thought,
-    pub score: f64,
-}

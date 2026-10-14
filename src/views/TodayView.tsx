@@ -23,22 +23,14 @@ export default function TodayView({ refreshKey }: Props) {
   const [activeFocus, setActiveFocus] = useState<FocusSession | null>(null);
   const [now, setNow] = useState(Date.now());
 
-  const load = useCallback(() => {
-    void api
-      .getTodayBrief()
-      .then(setBrief)
-      .catch(() => setBrief(null));
+  const loadTasks = useCallback(() => {
     void api
       .getTasks(false)
       .then(setTasks)
       .catch(() => setTasks([]));
-    void api
-      .syncCalendar()
-      .then((s) => {
-        setEvents(s.events);
-        setPermissionHint(s.permissionHint);
-      })
-      .catch(() => setEvents([]));
+  }, []);
+
+  const loadFocus = useCallback(() => {
     void api
       .getFocusToday()
       .then((sessions) => {
@@ -47,6 +39,27 @@ export default function TodayView({ refreshKey }: Props) {
       })
       .catch(() => setFocus([]));
   }, []);
+
+  // Full refresh: calendar first so the brief sees today's events. The brief
+  // itself is cached per day by the backend, so opening Today is instant;
+  // task and focus events refresh just their own card.
+  const load = useCallback(() => {
+    loadTasks();
+    loadFocus();
+    void api
+      .syncCalendar()
+      .then((s) => {
+        setEvents(s.events);
+        setPermissionHint(s.permissionHint);
+      })
+      .catch(() => setEvents([]))
+      .finally(() => {
+        void api
+          .getTodayBrief()
+          .then(setBrief)
+          .catch(() => setBrief(null));
+      });
+  }, [loadTasks, loadFocus]);
 
   useEffect(load, [load, refreshKey]);
 
@@ -60,17 +73,19 @@ export default function TodayView({ refreshKey }: Props) {
     };
   }, [activeFocus]);
 
-  // Live refresh from backend events.
+  // Live refresh from backend events. (No `calendar-synced` listener: this
+  // view's own sync emits it, which used to re-trigger `load` in a loop.)
   useEffect(() => {
-    const un1 = api.on<unknown>("tasks-updated", load);
-    const un2 = api.on<{ count: number }>("calendar-synced", () => load());
-    const un3 = api.on<unknown>("focus-updated", load);
+    const un1 = api.on<unknown>("tasks-updated", loadTasks);
+    const un2 = api.on<unknown>("focus-updated", loadFocus);
+    // A fresh insight is generated in the background after each capture.
+    const un3 = api.on<TodayBrief>("today-brief", setBrief);
     return () => {
       void un1.then((f) => f());
       void un2.then((f) => f());
       void un3.then((f) => f());
     };
-  }, [load]);
+  }, [loadTasks, loadFocus]);
 
   const startFocus = async () => {
     try {
@@ -97,8 +112,7 @@ export default function TodayView({ refreshKey }: Props) {
     );
     try {
       await api.finishFocus(activeFocus.id, Math.max(elapsed, 0));
-      setActiveFocus(null);
-      load();
+      setActiveFocus(null); // `focus-updated` refreshes the list
     } catch (e) {
       alert(String(e));
     }
@@ -147,7 +161,7 @@ export default function TodayView({ refreshKey }: Props) {
 
         {/* checklist + calendar, right column */}
         <div className="space-y-4">
-          <TaskCard tasks={tasks} onToggle={toggleTask} onRemove={removeTask} onRefresh={load} />
+          <TaskCard tasks={tasks} onToggle={toggleTask} onRemove={removeTask} onRefresh={loadTasks} />
           <CalendarCard events={events} hint={permissionHint} onResync={load} />
         </div>
       </div>

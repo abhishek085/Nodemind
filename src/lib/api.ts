@@ -6,8 +6,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   CalendarSync,
+  CaptureMode,
   CaptureResult,
-  CaptureSession,
+  CaptureStatus,
   EngineStatus,
   FocusSession,
   FocusStarted,
@@ -16,7 +17,7 @@ import type {
   Settings,
   Task,
   Thought,
-  ThoughtHit,
+  SearchHit,
   TodayBrief,
   UpdateInfo,
 } from "./types";
@@ -29,13 +30,20 @@ export const restartEngine = () => invoke<void>("restart_engine");
 
 // ── capture ─────────────────────────────────────────────────────────────────
 
-export const beginCapture = (language?: string) =>
-  invoke<CaptureSession>("begin_capture", { language: language ?? null });
+// The backend owns the microphone; these only drive the session. Progress
+// streams over the `capture-*` events (see lib/useCapture.ts).
+export const startCapture = (language?: string, mode: CaptureMode = "note") =>
+  invoke<void>("start_capture", { language: language ?? null, mode });
 
-export const appendAudio = (chunkBase64: string) =>
-  invoke<number>("append_audio", { chunk: chunkBase64 });
+export const stopCapture = () => invoke<CaptureResult>("stop_capture");
 
-export const finishCapture = () => invoke<CaptureResult>("finish_capture");
+export const cancelCapture = () => invoke<void>("cancel_capture");
+
+export const captureStatus = () => invoke<CaptureStatus>("capture_status");
+
+/** Open the full window (from the menu-bar popover), optionally on a view. */
+export const openMainWindow = (view?: string) =>
+  invoke<void>("open_main_window", { view: view ?? null });
 
 // ── thoughts / tasks / graph ────────────────────────────────────────────────
 
@@ -62,14 +70,17 @@ export const deleteTask = (id: string) => invoke<void>("delete_task", { id });
 export const getGraph = (limit?: number) =>
   invoke<GraphData>("get_graph", { limit: limit ?? null });
 
-export const searchThoughts = (query: string, k?: number) =>
-  invoke<ThoughtHit[]>("search_thoughts", { query, k: k ?? null });
+/** Semantic search (EmbeddingGemma 2) with a keyword boost, over every transcript. */
+export const searchMemory = (query: string, k?: number) =>
+  invoke<SearchHit[]>("search_memory", { query, k: k ?? null });
 
 // ── calendar / today / focus ────────────────────────────────────────────────
 
 export const syncCalendar = () => invoke<CalendarSync>("sync_calendar");
 
-export const getTodayBrief = () => invoke<TodayBrief>("get_today_brief");
+/** Cached per day; `refresh` forces a new LLM insight. */
+export const getTodayBrief = (refresh?: boolean) =>
+  invoke<TodayBrief>("get_today_brief", { refresh: refresh ?? null });
 
 export const startFocus = (minutes?: number) =>
   invoke<FocusStarted>("start_focus", { minutes: minutes ?? null });

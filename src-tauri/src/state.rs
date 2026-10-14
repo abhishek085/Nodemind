@@ -1,7 +1,7 @@
 //! Global application state shared across all Tauri commands.
 //!
 //! Layout follows the design doc:
-//!   audio (frontend Web Audio) → engine (sidecars) → store (SQLite + vectors) → UI
+//!   audio (CoreAudio, backend) → engine (sidecars) → store (SQLite + vectors) → UI
 //!
 //! Everything in this struct is `Send + Sync` so it can live in `tauri::State`.
 
@@ -66,30 +66,6 @@ pub struct EngineStatus {
     pub error: Option<String>,
 }
 
-/// Accumulating buffer for a voice capture session.
-/// The frontend streams base64 PCM chunks (16 kHz mono s16le) into this.
-pub struct CaptureBuffer {
-    pub active: bool,
-    pub language: String,
-    pub pcm: Vec<u8>,
-    pub started_at: i64,
-}
-
-impl CaptureBuffer {
-    pub fn new(language: &str) -> Self {
-        Self {
-            active: true,
-            language: language.to_string(),
-            pcm: Vec::with_capacity(16_000 * 2 * 60), // one minute of 16k s16 mono
-            started_at: crate::time::now_millis(),
-        }
-    }
-
-    pub fn duration_secs(&self) -> u64 {
-        (self.pcm.len() as f64 / (16_000.0 * 2.0)).round() as u64
-    }
-}
-
 /// The one global state object, managed by Tauri.
 pub struct AppState {
     pub app: AppHandle,
@@ -106,12 +82,15 @@ pub struct AppState {
     pub chat_server: Mutex<Option<Child>>,
     /// llama-server serving the embedding model (port 8643)
     pub embed_server: Mutex<Option<Child>>,
+    /// whisper-server keeping the speech model loaded (port 8644)
+    pub whisper_server: Mutex<Option<Child>>,
+    pub whisper_running: AtomicBool,
     pub phase: AtomicU64,
     pub chat_running: AtomicBool,
     pub embed_running: AtomicBool,
     pub model_error: Mutex<Option<String>>,
-    /// current capture session (only one at a time)
-    pub capture: Mutex<CaptureBuffer>,
+    /// the live capture session, if recording (only one at a time)
+    pub capture: Mutex<Option<crate::audio::session::Session>>,
     /// per-model download bookkeeping for progress events
     pub downloads: Mutex<std::collections::HashMap<ModelKey, crate::models::DownloadState>>,
 }
@@ -153,16 +132,13 @@ impl AppState {
             sidecar_dir,
             chat_server: Mutex::new(None),
             embed_server: Mutex::new(None),
+            whisper_server: Mutex::new(None),
+            whisper_running: AtomicBool::new(false),
             phase: AtomicU64::new(EnginePhase::Setup as u64),
             chat_running: AtomicBool::new(false),
             embed_running: AtomicBool::new(false),
             model_error: Mutex::new(None),
-            capture: Mutex::new(CaptureBuffer {
-                active: false,
-                language: "en".into(),
-                pcm: Vec::new(),
-                started_at: 0,
-            }),
+            capture: Mutex::new(None),
             downloads: Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -175,7 +151,9 @@ impl AppState {
         if in_data.is_file() && in_data.metadata().map(|m| m.len() > 0).unwrap_or(false) {
             return Some(in_data);
         }
-        let in_bundle = self.resources_dir.join("models").join(name);
+        // tauri.conf.json bundles `resources/models/**` with its path prefix,
+        // so it lands at Contents/Resources/resources/models.
+        let in_bundle = self.resources_dir.join("resources/models").join(name);
         if in_bundle.is_file() {
             return Some(in_bundle);
         }

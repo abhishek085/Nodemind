@@ -28,6 +28,10 @@ pub struct Thought {
     pub started_at: String, // RFC3339
     pub duration_secs: i64,
     pub created_at: String,
+    /// "note" (a brain-dump) or "meeting" (labelled You/Them transcript).
+    pub kind: String,
+    /// Meeting minutes as JSON (`engine::meeting::Minutes`), meetings only.
+    pub minutes: Option<String>,
 }
 
 /// A concrete to-do extracted from a thought (or added by hand).
@@ -102,7 +106,9 @@ CREATE TABLE IF NOT EXISTS thoughts (
   day           TEXT NOT NULL,
   started_at    TEXT NOT NULL,
   duration_secs INTEGER NOT NULL DEFAULT 0,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'note',
+  minutes       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_thoughts_day ON thoughts(day);
 CREATE INDEX IF NOT EXISTS idx_thoughts_created ON thoughts(created_at);
@@ -146,6 +152,14 @@ CREATE TABLE IF NOT EXISTS embeddings (
   vec      BLOB NOT NULL       -- little-endian f32
 );
 CREATE INDEX IF NOT EXISTS idx_embeddings_ref ON embeddings(ref_kind, ref_id);
+
+CREATE TABLE IF NOT EXISTS passages (
+  id         TEXT PRIMARY KEY,
+  thought_id TEXT NOT NULL,     -- the transcript this passage came from
+  idx        INTEGER NOT NULL,  -- order within the transcript
+  text       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_passages_thought ON passages(thought_id);
 
 CREATE TABLE IF NOT EXISTS calendar_events (
   id       TEXT PRIMARY KEY,
@@ -552,8 +566,8 @@ fn migrate_legacy(conn: &mut Connection) -> Result<()> {
 
 pub fn insert_thought(conn: &Connection, t: &Thought) -> Result<()> {
     conn.execute(
-        "INSERT INTO thoughts (id, text, summary, language, day, started_at, duration_secs, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO thoughts (id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             t.id,
             t.text,
@@ -562,7 +576,9 @@ pub fn insert_thought(conn: &Connection, t: &Thought) -> Result<()> {
             t.day,
             t.started_at,
             t.duration_secs,
-            t.created_at
+            t.created_at,
+            t.kind,
+            t.minutes
         ],
     )
     .map_err(|e| crate::error::Error::Store(e.to_string()))?;
@@ -579,11 +595,13 @@ fn thought_from_row(row: &rusqlite::Row) -> SqlResult<Thought> {
         started_at: row.get(5)?,
         duration_secs: row.get(6)?,
         created_at: row.get(7)?,
+        kind: row.get(8)?,
+        minutes: row.get(9)?,
     })
 }
 
 pub const THOUGHT_COLS: &str =
-    "id, text, summary, language, day, started_at, duration_secs, created_at";
+    "id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes";
 
 /// Recent thoughts, newest first.
 pub fn get_thoughts(conn: &Connection, limit: i64) -> Result<Vec<Thought>> {
@@ -625,6 +643,7 @@ pub fn get_thoughts_for_day(conn: &Connection, day: &str) -> Result<Vec<Thought>
 pub fn delete_thought(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM tasks WHERE thought_id = ?1", params![id])
         .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    delete_passages(conn, id)?;
     conn.execute(
         "DELETE FROM embeddings WHERE ref_kind = 'thought' AND ref_id = ?1",
         params![id],
@@ -633,6 +652,72 @@ pub fn delete_thought(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])
         .map_err(|e| crate::error::Error::Store(e.to_string()))?;
     Ok(())
+}
+
+// ── Passages (search index) ─────────────────────────────────────────────────
+
+/// A searchable slice of a transcript (see `engine::search`).
+#[derive(Debug, Clone)]
+pub struct Passage {
+    pub id: String,
+    pub thought_id: String,
+    pub text: String,
+}
+
+/// Replace a thought's passages; returns the new passage ids, in order.
+pub fn replace_passages(conn: &Connection, thought_id: &str, texts: &[String]) -> Result<Vec<String>> {
+    delete_passages(conn, thought_id)?;
+    let mut ids = Vec::with_capacity(texts.len());
+    for (i, text) in texts.iter().enumerate() {
+        let id = format!("{thought_id}:{i}");
+        conn.execute(
+            "INSERT INTO passages (id, thought_id, idx, text) VALUES (?1, ?2, ?3, ?4)",
+            params![id, thought_id, i as i64, text],
+        )
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+fn delete_passages(conn: &Connection, thought_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM embeddings WHERE ref_kind = 'passage'
+           AND ref_id IN (SELECT id FROM passages WHERE thought_id = ?1)",
+        params![thought_id],
+    )
+    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    conn.execute("DELETE FROM passages WHERE thought_id = ?1", params![thought_id])
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(())
+}
+
+pub fn all_passages(conn: &Connection) -> Result<Vec<Passage>> {
+    let mut stmt = conn
+        .prepare("SELECT id, thought_id, text FROM passages")
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |r| Ok(Passage { id: r.get(0)?, thought_id: r.get(1)?, text: r.get(2)? }))
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(rows.flatten().collect())
+}
+
+/// Thoughts with no passages, or passages but no vectors for `model`
+/// (e.g. captured while the embedding server was down): (id, text).
+pub fn thoughts_missing_passage_vectors(conn: &Connection, model: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.text FROM thoughts t
+             WHERE NOT EXISTS (
+               SELECT 1 FROM passages p JOIN embeddings e
+                 ON e.ref_kind = 'passage' AND e.ref_id = p.id AND e.model = ?1
+               WHERE p.thought_id = t.id)",
+        )
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    let rows = stmt
+        .query_map(params![model], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(rows.flatten().collect())
 }
 
 // ── Tasks ───────────────────────────────────────────────────────────────────
@@ -843,6 +928,8 @@ mod tests {
             started_at: "2026-10-13T10:00:00Z".into(),
             duration_secs: 30,
             created_at: "2026-10-13T10:00:00Z".into(),
+            kind: "note".into(),
+            minutes: None,
         };
         insert_thought(&conn, &t).unwrap();
         assert_eq!(get_thoughts(&conn, 10).unwrap().len(), 1);

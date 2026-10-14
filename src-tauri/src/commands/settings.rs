@@ -68,6 +68,16 @@ fn lock_db<'s>(s: &'s Arc<AppState>) -> Result<std::sync::MutexGuard<'s, rusqlit
     s.db.lock().map_err(|_| crate::error::Error::Store("db".into()))
 }
 
+/// The capture language the user picked ("en" | "hi"), defaulting to English.
+pub fn current_language(state: &AppState) -> String {
+    state
+        .db
+        .lock()
+        .ok()
+        .and_then(|conn| db::get_meta(&conn, "language").ok().flatten())
+        .unwrap_or_else(|| "en".to_string())
+}
+
 #[tauri::command]
 pub fn set_language(state: State<'_, Arc<AppState>>, language: String) -> Result<()> {
     let language = if language == "hi" { "hi" } else { "en" }.to_string();

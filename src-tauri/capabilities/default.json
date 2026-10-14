@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main window. The Rust backend spawns the bundled sidecars directly; these entries cover the JS-side shells, updater, notifications, and opener.",
+  "description": "Permissions for the main window and the menu-bar popover. The Rust backend owns the mic and spawns the bundled sidecars directly; these entries cover events, the updater, notifications, and opener.",
   "windows": [
-    "main"
+    "main",
+    "quick"
   ],
   "permissions": [
     "core:default",

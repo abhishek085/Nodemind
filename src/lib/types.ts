@@ -34,10 +34,20 @@ export interface ModelProgress {
 
 // ── Capture ─────────────────────────────────────────────────────────────────
 
-export interface CaptureSession {
-  language: string;
-  maxSeconds: number;
-  startedAt: number;
+/** "note" = brain-dump (mic); "meeting" = mic ("You") + call audio ("Them"). */
+export type CaptureMode = "note" | "meeting";
+
+export interface CaptureStatus {
+  recording: boolean;
+  mode: CaptureMode | null;
+  elapsedSecs: number;
+  partial: string;
+}
+
+/** A task a capture added to Today (undo = delete it). */
+export interface TaskRef {
+  id: string;
+  title: string;
 }
 
 export interface CommandIntent {
@@ -50,12 +60,28 @@ export interface CaptureResult {
   thoughtId: string;
   transcript: string;
   summary: string | null;
-  tasks: string[];
+  tasks: TaskRef[];
   topics: string[];
   people: string[];
   related: string[];
   command: CommandIntent | null;
   durationSecs: number;
+  mode: CaptureMode;
+  /** Meeting mode only. */
+  minutes?: MeetingMinutes;
+}
+
+export interface ActionItem {
+  owner: string; // "You", "Them", or a name
+  task: string;
+  due: string;
+}
+
+export interface MeetingMinutes {
+  title: string;
+  summary: string;
+  decisions: string[];
+  actionItems: ActionItem[];
 }
 
 export type CaptureStage = "transcribing" | "organizing" | "done";
@@ -115,9 +141,20 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
-export interface ThoughtHit {
-  thought: Thought;
+/** Best-matching passage of one thought (see engine/search.rs). */
+export interface SearchHit {
+  thoughtId: string;
+  snippet: string;
+  summary: string | null;
+  day: string; // YYYY-MM-DD (local)
+  startedAt: string;
   score: number;
+  /** Clearly above the rest of your history, not just the closest. */
+  strong: boolean;
+  /** Nothing clearly matched; these are just the closest. */
+  weak: boolean;
+  /** Query words found verbatim in the snippet. */
+  matched: string[];
 }
 
 // ── Calendar / today / focus ────────────────────────────────────────────────

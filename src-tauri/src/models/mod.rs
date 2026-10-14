@@ -1,10 +1,8 @@
 //! Model management: a static manifest + a one-time downloader.
 //!
-//! Resolution order for each model:
-//!   1. `app_data/models/<file>`   — downloaded at first launch (writable)
-//!   2. `resources/models/<file>`  — bundled inside the .app if the builder
-//!      ran `scripts/fetch-models.sh` (true batteries-included)
-//!   3. download to (1) with progress events, then continue
+//! Models are not bundled (keeps the DMG and every update small); they are
+//! downloaded once into `app_data/models/` with progress events. A copy under
+//! the bundle's `resources/models/` is still honoured if a builder adds one.
 //!
 //! Everything after the first launch is fully offline.
 
@@ -15,7 +13,6 @@ use futures_util::StreamExt;
 use sha2::Digest;
 use tauri::Emitter;
 
-use crate::error::{Error, Result};
 use crate::state::AppState;
 
 pub mod manifest;
@@ -55,13 +52,6 @@ pub fn begin_setup(state: Arc<AppState>) {
             }
         }
         if all_ok {
-            // Companion (CoreML encoder) is optional — best effort, background.
-            let s2 = Arc::clone(&state);
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = download_companion(s2).await {
-                    eprintln!("[models] companion download failed: {e}");
-                }
-            });
             crate::engine::boot(Arc::clone(&state));
         }
     });
@@ -299,90 +289,6 @@ async fn download_one(state: Arc<AppState>, def: &ModelDef) -> bool {
 
 fn hexify(bytes: impl AsRef<[u8]>) -> String {
     bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Best-effort download of the whisper CoreML encoder, which makes STT
-/// 5-10× faster on Apple Silicon. It ships as a zip from the canonical model
-/// repo and is unzipped into `models/ggml-small-encoder.mlmodelc/`.
-///
-/// Purely optional — without it whisper runs CPU-only (slower, still works).
-async fn download_companion(state: Arc<AppState>) -> Result<()> {
-    const DIR: &str = "ggml-small-encoder.mlmodelc";
-    const ZIP: &str = "ggml-small-encoder.mlmodelc.zip";
-    const URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-encoder.mlmodelc.zip";
-    const SHA: &str = "de43fb9fed471e95c19e60ae67575c2bf09e8fb607016da171b06ddad313988b";
-
-    let dir_path = state.models_dir.join(DIR);
-    if dir_path.join("model.mil").exists() {
-        return Ok(()); // already present
-    }
-
-    let zip_path = state.models_dir.join(ZIP);
-    let client = reqwest::Client::builder()
-        .user_agent(format!("Nodemind/{}", crate::store::db::app_version()))
-        .build()
-        .map_err(Error::Http)?;
-
-    if !zip_path.exists() {
-        let resp = client
-            .get(URL)
-            .send()
-            .await
-            .map_err(Error::Http)?
-            .error_for_status()
-            .map_err(Error::Http)?;
-        let bytes = resp.bytes().await.map_err(Error::Http)?;
-        if hexify(&sha2::Sha256::digest(&bytes)) != SHA {
-            return Err(Error::Engine(
-                "CoreML encoder zip failed checksum — skipping (STT will run CPU-only)".into(),
-            ));
-        }
-        std::fs::write(&zip_path, &bytes).map_err(Error::Io)?;
-    }
-
-    // Unzip (blocking: ~150MB of small files).
-    let dir_exists = dir_path.exists();
-    let _ = dir_exists;
-    tokio::task::spawn_blocking({
-        let zip_path = zip_path.clone();
-        let dir_path = dir_path.clone();
-        move || -> Result<()> {
-            std::fs::create_dir_all(&dir_path).map_err(Error::Io)?;
-            let file = std::fs::File::open(&zip_path).map_err(Error::Io)?;
-            let mut zip =
-                zip::ZipArchive::new(file).map_err(|e| Error::Engine(format!("zip: {e}")))?;
-            for i in 0..zip.len() {
-                let mut entry = zip
-                    .by_index(i)
-                    .map_err(|e| Error::Engine(format!("zip entry: {e}")))?;
-                let name = entry
-                    .enclosed_name()
-                    .ok_or_else(|| Error::Engine("unsafe zip path".into()))?;
-                let is_dir = name.to_string_lossy().ends_with('/');
-                let dest = dir_path.join(&name);
-                if is_dir {
-                    std::fs::create_dir_all(&dest).map_err(Error::Io)?;
-                } else {
-                    if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent).map_err(Error::Io)?;
-                    }
-                    let mut out = std::fs::File::create(&dest).map_err(Error::Io)?;
-                    std::io::copy(&mut entry, &mut out).map_err(Error::Io)?;
-                }
-            }
-            Ok(())
-        }
-    })
-    .await
-    .map_err(|e| Error::Engine(format!("unzip task: {e}")))??;
-
-    let _ = std::fs::remove_file(&zip_path);
-    if dir_path.join("model.mil").exists() {
-        eprintln!("[models] ✓ coreml encoder ready");
-        Ok(())
-    } else {
-        Err(Error::Engine("CoreML encoder missing after unzip".into()))
-    }
 }
 
 /// Whether the models required for a *fully* functional engine are present.

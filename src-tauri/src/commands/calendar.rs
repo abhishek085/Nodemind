@@ -1,11 +1,11 @@
-//! Calendar command — reads today's Apple Calendar events into the local cache.
+//! Calendar command — reads today's calendar events into the local cache.
 
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::State;
 
-use crate::calendar::apple;
+use crate::calendar::{apple, eventkit};
 use crate::error::Result;
 use crate::state::AppState;
 use crate::store::db::{self, CalendarEvent};
@@ -27,10 +27,15 @@ pub struct CalendarSync {
 pub async fn sync_calendar(state: State<'_, Arc<AppState>>) -> Result<CalendarSync> {
     let day = time::local_day_key();
 
-    // AppleScript is a blocking subprocess — off the async thread.
+    // EventKit via the helper first; AppleScript if it isn't available.
+    // Both are blocking subprocesses — off the async thread.
+    let helper = state.sidecar_dir.join("nodemind-helper");
     let result = tauri::async_runtime::spawn_blocking({
         let day = day.clone();
-        move || apple::events_for_day(&day)
+        move || match eventkit::events_for_day(&helper, &day)? {
+            eventkit::Fetch::Events(events) => Ok(events),
+            eventkit::Fetch::Unavailable => apple::events_for_day(&day),
+        }
     })
     .await
     .map_err(|e| crate::error::Error::Calendar(format!("calendar task: {e}")))?;

@@ -14,76 +14,127 @@ use crate::time;
 /// The daily "friction" insight for the Today view.
 ///
 /// Compares the mind's activity (thoughts, open tasks) against the day's
-/// structure (calendar, focus). Falls back to a rule-based insight when the
-/// LLM isn't ready, so Today always works.
+/// structure (calendar, focus). The insight costs an LLM call, so it is
+/// cached per day and regenerated after each capture (see
+/// [`refresh_brief_in_background`]) or when `refresh` is set; the counts are
+/// always live. Falls back to a rule-based insight when the LLM isn't ready.
 #[tauri::command]
-pub async fn get_today_brief(state: State<'_, Arc<AppState>>) -> Result<TodayBrief> {
-    let day = time::local_day_key();
-    let (open_tasks, thoughts, events, focus_minutes) = {
-        let conn = state.db.lock().map_err(|_| crate::error::Error::Store("db".into()))?;
-        let tasks = db::get_tasks(&conn, false).unwrap_or_default();
-        let thoughts = db::get_thoughts_for_day(&conn, &day).unwrap_or_default();
-        let events = db::get_calendar_day(&conn, &day).unwrap_or_default();
-        let focus = db::focus_minutes_today(&conn, &day);
-        (
-            tasks,
-            thoughts,
-            events,
-            focus,
-        )
+pub async fn get_today_brief(
+    state: State<'_, Arc<AppState>>,
+    refresh: Option<bool>,
+) -> Result<TodayBrief> {
+    let snap = snapshot(&state)?;
+    let cached = if refresh.unwrap_or(false) { None } else { cached_insight(&state, &snap.day) };
+    let (friction, suggestion) = match cached {
+        Some(insight) => insight,
+        None => {
+            let insight = generate_insight(&snap).await;
+            store_insight(&state, &snap.day, &insight);
+            insight
+        }
     };
+    Ok(snap.into_brief(friction, suggestion))
+}
 
-    let scheduled_hours = crate::calendar::apple::scheduled_hours(&events);
-    let task_list = open_tasks
+/// Regenerate the cached insight off the request path (after a capture).
+pub fn refresh_brief_in_background(state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        let Ok(snap) = snapshot(&state) else {
+            return;
+        };
+        let (friction, suggestion) = generate_insight(&snap).await;
+        store_insight(&state, &snap.day, &(friction.clone(), suggestion.clone()));
+        state.emit("today-brief", &serde_json::to_value(snap.into_brief(friction, suggestion)).unwrap_or_default());
+    });
+}
+
+/// Everything the brief is computed from — all cheap local reads.
+struct Snapshot {
+    day: String,
+    open_tasks: Vec<crate::store::db::Task>,
+    thoughts_today: usize,
+    events_today: usize,
+    scheduled_hours: f64,
+    focus_minutes: i64,
+    fog_json: String,
+}
+
+impl Snapshot {
+    fn into_brief(self, friction: Option<String>, suggestion: Option<String>) -> TodayBrief {
+        TodayBrief {
+            friction,
+            suggestion,
+            open_tasks: self.open_tasks.len(),
+            thoughts_today: self.thoughts_today,
+            events_today: self.events_today,
+            scheduled_hours: self.scheduled_hours,
+            focus_minutes: self.focus_minutes,
+        }
+    }
+}
+
+fn snapshot(state: &AppState) -> Result<Snapshot> {
+    let day = time::local_day_key();
+    let conn = state.db.lock().map_err(|_| crate::error::Error::Store("db".into()))?;
+    let events = db::get_calendar_day(&conn, &day).unwrap_or_default();
+    Ok(Snapshot {
+        open_tasks: db::get_tasks(&conn, false).unwrap_or_default(),
+        thoughts_today: db::get_thoughts_for_day(&conn, &day).unwrap_or_default().len(),
+        events_today: events.len(),
+        scheduled_hours: crate::calendar::apple::scheduled_hours(&events),
+        focus_minutes: db::focus_minutes_today(&conn, &day),
+        // Recent fog signals (written by the pipeline).
+        fog_json: db::get_meta(&conn, "fog_today").ok().flatten().unwrap_or_else(|| "[]".into()),
+        day,
+    })
+}
+
+async fn generate_insight(snap: &Snapshot) -> (Option<String>, Option<String>) {
+    let task_list = snap
+        .open_tasks
         .iter()
         .take(12)
         .map(|t| format!("\"{}\"", t.title))
         .collect::<Vec<_>>()
         .join(", ");
-
-    // Recent fog signals (from the meta table — written by the pipeline).
-    let fog_json = state
-        .db
-        .lock()
-        .map_err(|_| crate::error::Error::Store("db".into()))?
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'fog_today'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .unwrap_or_else(|_| "[]".to_string());
-
     let input = llm::BriefInput {
-        open_tasks: open_tasks.len(),
+        open_tasks: snap.open_tasks.len(),
         open_task_list: if task_list.is_empty() { "(none)".into() } else { task_list },
-        thoughts_today: thoughts.len(),
-        events_today: events.len(),
-        scheduled_hours,
-        focus_minutes,
-        fog_json,
+        thoughts_today: snap.thoughts_today,
+        events_today: snap.events_today,
+        scheduled_hours: snap.scheduled_hours,
+        focus_minutes: snap.focus_minutes,
+        fog_json: snap.fog_json.clone(),
     };
-
-    let llm_brief = llm::daily_brief(input).await.ok();
-
-    let (friction, suggestion) = match llm_brief {
+    match llm::daily_brief(input).await.ok() {
         Some(b) if b.friction.is_some() || b.suggestion.is_some() => (b.friction, b.suggestion),
-        _ => rule_based_brief(&open_tasks, thoughts.len(), events.len(), scheduled_hours, focus_minutes),
-    };
+        _ => rule_based_brief(
+            &snap.open_tasks,
+            snap.thoughts_today,
+            snap.events_today,
+            snap.scheduled_hours,
+            snap.focus_minutes,
+        ),
+    }
+}
 
-    state.emit(
-        "today-brief",
-        &serde_json::json!({ "friction": friction, "suggestion": suggestion }),
-    );
-
-    Ok(TodayBrief {
-        friction,
-        suggestion,
-        open_tasks: open_tasks.len(),
-        thoughts_today: thoughts.len(),
-        events_today: events.len(),
-        scheduled_hours,
-        focus_minutes,
+fn cached_insight(state: &AppState, day: &str) -> Option<(Option<String>, Option<String>)> {
+    let conn = state.db.lock().ok()?;
+    let raw = db::get_meta(&conn, "today_brief").ok().flatten()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    (v["day"].as_str() == Some(day)).then(|| {
+        (
+            v["friction"].as_str().map(str::to_string),
+            v["suggestion"].as_str().map(str::to_string),
+        )
     })
+}
+
+fn store_insight(state: &AppState, day: &str, insight: &(Option<String>, Option<String>)) {
+    if let Ok(conn) = state.db.lock() {
+        let v = serde_json::json!({ "day": day, "friction": insight.0, "suggestion": insight.1 });
+        let _ = db::set_meta(&conn, "today_brief", &v.to_string());
+    }
 }
 
 /// Deterministic fallback when the LLM can't answer.

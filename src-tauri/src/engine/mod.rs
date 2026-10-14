@@ -1,12 +1,16 @@
 //! The local AI engine: bundled C++ sidecars + their client helpers.
 //!
-//! - [`sidecar`]  — spawn/health/kill for the two `llama-server` instances.
-//! - [`whisper`]  — run the bundled `whisper-cli` on a wav file.
+//! - [`sidecar`]  — spawn/health/kill for the llama-server and whisper-server sidecars.
+//! - [`whisper`]  — speech → text (resident whisper-server, `whisper-cli` fallback).
 //! - [`llm`]      — chat + embeddings over llama-server's OpenAI-compatible API.
-//! - [`pipeline`] — the full capture pipeline: wav → text → checklist + graph.
+//! - [`pipeline`] — organize a transcript: checklist + graph + search index.
+//! - [`meeting`]  — You/Them transcript assembly and meeting minutes.
+//! - [`search`]   — hybrid (EmbeddingGemma 2 + keyword) search over transcripts.
 
 pub mod llm;
+pub mod meeting;
 pub mod pipeline;
+pub mod search;
 pub mod sidecar;
 pub mod whisper;
 
@@ -50,14 +54,18 @@ pub fn boot(state: Arc<AppState>) {
             return;
         }
 
-        // Embedding server first (smaller, starts faster).
-        let embed_ok = sidecar::ensure_embed_server(&state).await;
-        let chat_ok = sidecar::ensure_chat_server(&state).await;
+        // All three load in parallel; whisper is optional (CLI fallback).
+        let (embed_ok, chat_ok, _whisper_ok) = tokio::join!(
+            sidecar::ensure_embed_server(&state),
+            sidecar::ensure_chat_server(&state),
+            sidecar::ensure_whisper_server(&state),
+        );
 
         if embed_ok && chat_ok {
             state.set_phase(EnginePhase::Ready);
             state.model_error.lock().unwrap().take();
             eprintln!("[engine] ✓ ready ({})", crate::models::host_arch());
+            search::backfill_in_background(state.clone());
         } else {
             let msg = if !chat_ok {
                 "chat model server failed to start — see app logs".to_string()

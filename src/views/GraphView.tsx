@@ -14,7 +14,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import * as api from "../lib/api";
-import type { GraphData, NodeView, NodeType, ThoughtHit } from "../lib/types";
+import type { GraphData, NodeView, NodeType, SearchHit } from "../lib/types";
 
 const TYPE_COLOR: Record<NodeType, string> = {
   thought: "#4f6ef5",
@@ -113,11 +113,18 @@ const nodeTypes: NodeTypes = { mind: MindNodeComponent };
 
 // ── view ────────────────────────────────────────────────────────────────────
 
-export default function GraphView({ refreshKey }: { refreshKey: number }) {
+export default function GraphView({
+  refreshKey,
+  focusId = null,
+}: {
+  refreshKey: number;
+  /** Thought to highlight on open (from Search → "Show in mind map"). */
+  focusId?: string | null;
+}) {
   const [data, setData] = useState<GraphData | null>(null);
   const [selected, setSelected] = useState<NodeView | null>(null);
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<ThoughtHit[]>([]);
+  const [hits, setHits] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [highlightId, setHighlightId] = useState<string | null>(null);
 
@@ -134,6 +141,13 @@ export default function GraphView({ refreshKey }: { refreshKey: number }) {
   };
 
   useEffect(load, [refreshKey]);
+
+  // Arriving from Search: spotlight that thought once the graph is loaded.
+  useEffect(() => {
+    if (!focusId || !data) return;
+    setHighlightId(focusId);
+    setSelected((p) => data.nodes.find((n) => n.id === focusId) ?? p);
+  }, [focusId, data]);
 
   // Refresh when the backend reports new thoughts/tasks (new edges may appear).
   useEffect(() => {
@@ -173,9 +187,9 @@ export default function GraphView({ refreshKey }: { refreshKey: number }) {
     if (query.trim().length < 2) return;
     setSearching(true);
     try {
-      const h = await api.searchThoughts(query.trim(), 8);
+      const h = await api.searchMemory(query.trim(), 8);
       setHits(h);
-      const top = h[0]?.thought.id;
+      const top = h[0]?.thoughtId;
       if (top) {
         setHighlightId(top);
         setSelected((p) => data?.nodes.find((n) => n.id === top) ?? p);
@@ -252,15 +266,15 @@ export default function GraphView({ refreshKey }: { refreshKey: number }) {
             <div className="mt-2 space-y-1">
               {hits.map((h) => (
                 <button
-                  key={h.thought.id}
+                  key={h.thoughtId}
                   onClick={() => {
-                    setHighlightId(h.thought.id);
-                    setSelected((p) => data?.nodes.find((n) => n.id === h.thought.id) ?? p);
+                    setHighlightId(h.thoughtId);
+                    setSelected((p) => data?.nodes.find((n) => n.id === h.thoughtId) ?? p);
                   }}
                   className="block w-full truncate rounded-lg px-2 py-1.5 text-left text-[11px] text-ink-2 hover:bg-surface"
-                  title={h.thought.text}
+                  title={h.snippet}
                 >
-                  {h.thought.summary ?? h.thought.text}
+                  {h.summary ?? h.snippet}
                 </button>
               ))}
             </div>

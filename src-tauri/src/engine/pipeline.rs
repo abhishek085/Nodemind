@@ -1,7 +1,7 @@
 //! The capture pipeline: voice → text → checklist + graph memory.
 //!
-//! ```
-//! PCM (frontend) → wav → whisper-cli ─→ transcript
+//! ```text
+//! mic → live utterances → whisper ─→ transcript   (audio::session)
 //!                                         │
 //!              ┌──────────────┬───────────┤
 //!              ▼              ▼           ▼
@@ -11,8 +11,8 @@
 //!                             └─── merge (fuzzy, cosine ≥ 0.8)
 //! ```
 //!
-//! Heavy steps (file IO, whisper subprocess, HTTP to the servers) run on
-//! `spawn_blocking`; the command itself is async so the UI never freezes.
+//! The LLM passes run concurrently on llama-server's parallel slots; the
+//! command is async so the UI never freezes.
 
 use std::sync::Arc;
 
@@ -23,6 +23,9 @@ use crate::state::AppState;
 use crate::store::{db, graph, vec_};
 use crate::time;
 use uuid::Uuid;
+
+use crate::audio::session::CaptureMode;
+use crate::engine::meeting::{self, Minutes};
 
 /// A task extracted by the annotator.
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +53,26 @@ pub struct Annotation {
     pub sentiment: String,
 }
 
+/// A task created by a capture — enough for the UI to show and undo it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRef {
+    pub id: String,
+    pub title: String,
+}
+
+/// Normalized form for duplicate detection ("Call Priya." == "call priya").
+pub(crate) fn task_key(title: &str) -> String {
+    title
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// What the UI shows after a capture completes.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,7 +80,8 @@ pub struct CaptureResult {
     pub thought_id: String,
     pub transcript: String,
     pub summary: Option<String>,
-    pub tasks: Vec<String>,
+    /// Checklist items, already added to Today (the UI offers undo).
+    pub tasks: Vec<TaskRef>,
     pub topics: Vec<String>,
     pub people: Vec<String>,
     pub related: Vec<String>,
@@ -66,6 +90,10 @@ pub struct CaptureResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<crate::engine::llm::CommandIntent>,
     pub duration_secs: i64,
+    pub mode: CaptureMode,
+    /// Meeting minutes (meeting mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<Minutes>,
 }
 
 /// Cheap pre-filter for the command parser — most transcripts are ambient
@@ -94,77 +122,30 @@ fn stage(state: &AppState, stage: &str) {
     );
 }
 
-/// 20 minutes of 16 kHz mono s16 — the capture ceiling.
-pub const MAX_CAPTURE_BYTES: usize = 20 * 60 * 16_000 * 2;
+/// Longest single capture; the session stops itself after this.
+pub const MAX_CAPTURE_SECS: u64 = 20 * 60;
 
-/// Run the whole pipeline for the current capture buffer.
-pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
-    // 1) Pull the audio out of the shared buffer.
-    let (pcm, language, started_at_ms) = {
-        let mut cap = state
-            .capture
-            .lock()
-            .map_err(|_| Error::Capture("capture buffer poisoned".into()))?;
-        if !cap.active {
-            return Err(Error::Capture("no active capture".into()));
-        }
-        let mut pcm = std::mem::take(&mut cap.pcm);
-        let (pcm, started) = if pcm.len() > MAX_CAPTURE_BYTES {
-            // keep the most recent 20 minutes
-            let from = pcm.len() - MAX_CAPTURE_BYTES;
-            (pcm.split_off(from), cap.started_at + from as i64 / 32)
-        } else {
-            (pcm, cap.started_at)
-        };
-        cap.active = false;
-        (pcm, cap.language.clone(), started)
-    };
-    let _ = started_at_ms;
-    let duration_secs = (pcm.len() as f64 / (16_000.0 * 2.0)).round() as i64;
-
-    if pcm.len() < 16_000 * 2 {
-        // Less than a second of audio — treat as a no-op.
-        stage(&state, "done");
-        return Ok(CaptureResult {
-            thought_id: Uuid::new_v4().to_string(),
-            transcript: "(no audio)".to_string(),
-            summary: None,
-            tasks: Vec::new(),
-            topics: Vec::new(),
-            people: Vec::new(),
-            related: Vec::new(),
-            command: None,
-            duration_secs: 0,
-        });
-    }
-
-    // 2) wav + whisper in one blocking job (tempdir must outlive both).
-    stage(&state, "transcribing");
-    let transcript = {
-        let s = state.clone();
-        let language = language.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let tmp = tempfile::Builder::new()
-                .prefix("nm-audio-")
-                .tempdir()
-                .map_err(|e| Error::Capture(format!("tempdir: {e}")))?;
-            let wav = tmp.path().join("capture.wav");
-            crate::engine::whisper::write_wav(&pcm, &wav)?;
-            let text = crate::engine::whisper::transcribe(&s, &wav, &language)?;
-            drop(tmp);
-            Ok::<String, Error>(text)
-        })
-        .await
-        .map_err(|e| Error::Capture(format!("transcription task: {e}")))?
-        .map_err(|e| Error::Capture(e.message()))?
-    };
+/// Organize a finished transcript: store it, run the LLM passes, file the
+/// results into the graph, and add the checklist to Today.
+///
+/// Transcription already happened live during the capture
+/// (see `audio::session`), so this is the only wait after the user stops.
+/// Meetings get minutes instead of a brain-dump checklist; their action
+/// items for "You" become the tasks.
+pub async fn organize(
+    state: Arc<AppState>,
+    transcript: String,
+    language: String,
+    started_at_ms: i64,
+    duration_secs: i64,
+    mode: CaptureMode,
+) -> Result<CaptureResult> {
     let transcript = transcript.trim().to_string();
-
     if transcript.len() < 2 {
         stage(&state, "done");
         return Ok(CaptureResult {
             thought_id: Uuid::new_v4().to_string(),
-            transcript: "(silence)".to_string(),
+            transcript: String::new(), // UI shows "didn't catch any speech"
             summary: None,
             tasks: Vec::new(),
             topics: Vec::new(),
@@ -172,6 +153,8 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
             related: Vec::new(),
             command: None,
             duration_secs,
+            mode,
+            minutes: None,
         });
     }
 
@@ -189,6 +172,12 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
         started_at: started_rfc,
         duration_secs,
         created_at: chrono::Utc::now().to_rfc3339(),
+        kind: match mode {
+            CaptureMode::Note => "note",
+            CaptureMode::Meeting => "meeting",
+        }
+        .to_string(),
+        minutes: None,
     };
     {
         let conn = state
@@ -201,11 +190,7 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
     }
     state.emit("thoughts-updated", &serde_json::json!({}));
 
-    // 4) Checklist cleanup — the flagship feature.
-    stage(&state, "organizing");
-    let tasks = crate::engine::llm::clean_checklist(&transcript).await.unwrap_or_default();
-
-    // 5) Graph annotation (with recent thoughts as linking context).
+    // 4) Recent thoughts as linking context for the annotator.
     let pairs: Vec<(String, String)> = {
         let conn = state
             .db
@@ -223,25 +208,68 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
             })
             .collect()
     };
-    let annotation =
-        crate::engine::llm::annotate(&transcript, &pairs).await.unwrap_or_default();
 
-    // 5b) Direct-command pre-pass — only for transcripts that *look* like a
-    // command, so ambient brain-dumps don't pay for the call.
-    let command = if looks_like_command(&transcript) {
-        crate::engine::llm::parse_command(&transcript)
-            .await
-            .ok()
-            .filter(|c| c.intent != "unknown")
-    } else {
-        None
-    };
-
-    // 5c) Cognitive Mirror — friction signals, only for longer transcripts.
-    let fog_signals = if transcript.chars().count() > 200 {
-        crate::engine::llm::fog(&transcript).await.unwrap_or_default()
-    } else {
-        Vec::new()
+    // 5) All LLM passes run concurrently — llama-server decodes them in
+    // parallel slots, so wall time is the slowest call, not the sum.
+    stage(&state, "organizing");
+    let (checklist, annotation, command, fog_signals, minutes) = match mode {
+        CaptureMode::Note => {
+            //  - checklist cleanup (the flagship feature)
+            //  - graph annotation
+            //  - direct-command parse, only for transcripts that *look* like one
+            //  - Cognitive Mirror friction signals, only for longer transcripts
+            let wants_command = looks_like_command(&transcript);
+            let wants_fog = transcript.chars().count() > 200;
+            let (checklist, annotation, command, fog_signals) = tokio::join!(
+                async { crate::engine::llm::clean_checklist(&transcript).await.unwrap_or_default() },
+                async { crate::engine::llm::annotate(&transcript, &pairs).await.unwrap_or_default() },
+                async {
+                    if !wants_command {
+                        return None;
+                    }
+                    crate::engine::llm::parse_command(&transcript)
+                        .await
+                        .ok()
+                        .filter(|c| c.intent != "unknown")
+                },
+                async {
+                    if !wants_fog {
+                        return Vec::new();
+                    }
+                    crate::engine::llm::fog(&transcript).await.unwrap_or_default()
+                },
+            );
+            (checklist, annotation, command, fog_signals, None)
+        }
+        CaptureMode::Meeting => {
+            // Minutes first (map-reduce over the whole call), then the graph
+            // annotation works from the minutes, which fit the model's context.
+            let minutes = meeting::minutes(&transcript).await.unwrap_or_else(|e| {
+                eprintln!("[meeting] minutes failed: {e}");
+                Minutes { title: "Meeting".into(), ..Minutes::default() }
+            });
+            let digest = format!(
+                "{}\n{}\nDecisions: {}\nAction items: {}",
+                minutes.title,
+                minutes.summary,
+                minutes.decisions.join("; "),
+                minutes
+                    .action_items
+                    .iter()
+                    .map(|a| format!("{} — {}", a.owner, a.task))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+            let mut annotation = crate::engine::llm::annotate(&digest, &pairs).await.unwrap_or_default();
+            annotation.summary = Some(minutes.summary.clone()).filter(|s| !s.is_empty()).or(annotation.summary);
+            let mine: Vec<String> = minutes
+                .action_items
+                .iter()
+                .filter(|a| a.is_mine())
+                .map(|a| if a.due.is_empty() { a.task.clone() } else { format!("{} ({})", a.task, a.due) })
+                .collect();
+            (mine, annotation, None, Vec::new(), Some(minutes))
+        }
     };
 
     // 6) Embed: thought + entity labels in one batch call.
@@ -254,6 +282,7 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
     let vectors = crate::engine::llm::embed(&embed_texts).await.unwrap_or_default();
 
     // 7) Vector store + graph + tasks (all local).
+    let mut tasks: Vec<TaskRef> = Vec::new();
     {
         let conn = state
             .db
@@ -303,34 +332,34 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
             }
         }
 
-        // tasks from the annotator
-        for t in &annotation.tasks {
+        // The cleaned checklist goes straight onto Today, skipping anything
+        // already open. (The annotator's task list only feeds the graph.)
+        let mut seen: std::collections::HashSet<String> = db::get_tasks(&conn, false)
+            .unwrap_or_default()
+            .iter()
+            .map(|t| task_key(&t.title))
+            .collect();
+        let command_task = command
+            .as_ref()
+            .filter(|c| c.intent == "create_task")
+            .and_then(|c| c.title.as_deref())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        for title in checklist.iter().cloned().chain(command_task) {
+            if !seen.insert(task_key(&title)) {
+                continue;
+            }
             let task = db::Task {
                 id: Uuid::new_v4().to_string(),
-                title: t.title.clone(),
-                project: t.project.clone(),
+                title: title.clone(),
+                project: None,
                 thought_id: Some(thought_id.clone()),
                 done: false,
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
-            let _ = db::insert_task(&conn, &task);
-        }
-
-        // tasks from a parsed direct command ("remind me to …")
-        if let Some(cmd) = &command {
-            if cmd.intent == "create_task" {
-                if let Some(title) = cmd.title.as_deref().map(str::trim).filter(|t| !t.is_empty())
-                {
-                    let task = db::Task {
-                        id: Uuid::new_v4().to_string(),
-                        title: title.to_string(),
-                        project: None,
-                        thought_id: Some(thought_id.clone()),
-                        done: false,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    let _ = db::insert_task(&conn, &task);
-                }
+            if db::insert_task(&conn, &task).is_ok() {
+                tasks.push(TaskRef { id: task.id, title });
             }
         }
 
@@ -361,6 +390,13 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
             );
         }
 
+        if let Some(m) = &minutes {
+            let _ = conn.execute(
+                "UPDATE thoughts SET minutes = ?2 WHERE id = ?1",
+                rusqlite::params![thought_id, serde_json::to_string(m).unwrap_or_default()],
+            );
+        }
+
         // backfill the summary
         if let Some(summary) = &annotation.summary {
             let _ = conn.execute(
@@ -370,6 +406,11 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
         }
     }
 
+    // Passage index for memory search (keyword-only if embedding fails).
+    if let Err(e) = crate::engine::search::index_thought(&state, &thought_id, &transcript).await {
+        eprintln!("[search] indexing failed: {e}");
+    }
+
     state.emit("thoughts-updated", &serde_json::json!({}));
     state.emit("tasks-updated", &serde_json::json!({}));
     state.emit(
@@ -377,6 +418,7 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
         &serde_json::json!({ "thoughtId": thought_id }),
     );
     stage(&state, "done");
+    crate::commands::today::refresh_brief_in_background(state.clone());
 
     Ok(CaptureResult {
         thought_id,
@@ -388,6 +430,8 @@ pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
         related: annotation.related,
         command,
         duration_secs,
+        mode,
+        minutes,
     })
 }
 
@@ -396,7 +440,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn max_capture_is_20_minutes() {
-        assert_eq!(MAX_CAPTURE_BYTES, 20 * 60 * 16_000 * 2);
+    fn task_key_ignores_case_and_punctuation() {
+        assert_eq!(task_key("Call Priya."), task_key("call   priya"));
+        assert_ne!(task_key("Call Priya"), task_key("Call Rahul"));
     }
 }
