@@ -17,6 +17,7 @@ pub mod meeting;
 pub mod pipeline;
 pub mod search;
 pub mod sidecar;
+pub mod sort;
 pub mod tasks;
 pub mod whisper;
 

@@ -149,7 +149,7 @@ pub async fn embed(texts: &[String]) -> Result<Vec<Vec<f32>>, Error> {
     Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
 }
 
-/// Embed passages for retrieval, with EmbeddingGemma's document prefix.
+/// Embed statements for retrieval, with EmbeddingGemma's document prefix.
 pub async fn embed_documents(texts: &[String]) -> Result<Vec<Vec<f32>>, Error> {
     let prefixed: Vec<String> = texts.iter().map(|t| format!("title: none | text: {t}")).collect();
     embed(&prefixed).await
@@ -225,41 +225,6 @@ fn close_brackets(s: &str) -> String {
     out
 }
 
-/// Brain-dump → checklist. The flagship prompt; returns the task strings.
-pub async fn clean_checklist(rant: &str) -> Result<Vec<String>, Error> {
-    let system = prompts::get("clean_checklist.system");
-    let user = prompts::fill("clean_checklist.user", &[("text", rant)]);
-    let raw = chat(&system, &user, 0.1, 512).await?;
-    Ok(parse_tasks(&raw))
-}
-
-/// Lenient parser — mirrors the lessons from the web app:
-/// first JSON object, else line-split.
-pub fn parse_tasks(raw: &str) -> Vec<String> {
-    if let Some(obj) = extract_json(raw) {
-        if let Some(arr) = obj["tasks"].as_array() {
-            let mut out = Vec::new();
-            for t in arr {
-                if let Some(s) = t.as_str() {
-                    let s = s.trim();
-                    if !s.is_empty() {
-                        out.push(s.to_string());
-                    }
-                }
-            }
-            return out;
-        }
-    }
-    raw.lines()
-        .map(|l| l.trim().trim_start_matches(['-', '*', '•', 'x', 'X']))
-        .map(|l| l.trim_start_matches(|c: char| c.is_ascii_digit()))
-        .map(|l| l.trim().trim_start_matches(['.', ' ']))
-        .filter(|l| l.len() >= 3)
-        .take(30)
-        .map(|s| s.to_string())
-        .collect()
-}
-
 /// Annotation for the thought graph: a one-line summary and the entities
 /// (topics, people, goals) the thought is about. Related thoughts are found
 /// by EmbeddingGemma 2 instead (engine::links), not guessed by the LLM.
@@ -298,30 +263,6 @@ pub async fn annotate(text: &str) -> Result<crate::engine::pipeline::Annotation,
             .map(|s| s.to_lowercase())
             .filter(|s| ["positive", "neutral", "negative"].contains(&s.as_str()))
             .unwrap_or_else(|| "neutral".to_string()),
-    })
-}
-
-/// Command parser: "add a task to email Sam" → structured intent.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandIntent {
-    pub intent: String, // "create_task" | "unknown"
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub minutes: Option<u32>,
-}
-
-pub async fn parse_command(text: &str) -> Result<CommandIntent, Error> {
-    let now = crate::time::now_secs().to_string();
-    let system = prompts::fill("parse_command.system", &[("now", &now)]);
-    let user = prompts::fill("parse_command.user", &[("text", text)]);
-    let raw = chat(&system, &user, 0.0, 120).await?;
-    let v = extract_json(&raw).unwrap_or(serde_json::json!({}));
-    Ok(CommandIntent {
-        intent: v["intent"].as_str().unwrap_or("unknown").to_string(),
-        title: v["title"].as_str().map(|s| s.to_string()),
-        minutes: v["minutes"].as_u64().map(|m| m as u32),
     })
 }
 
@@ -371,10 +312,4 @@ mod tests {
         assert_eq!(extract_json(raw).unwrap()["a"].as_i64(), Some(1));
     }
 
-    #[test]
-    fn parse_tasks_fallback_lines() {
-        let raw = "- Call the bank\n* Renew passport\n3. Walk the dog";
-        let t = parse_tasks(raw);
-        assert_eq!(t, vec!["Call the bank", "Renew passport", "Walk the dog"]);
-    }
 }

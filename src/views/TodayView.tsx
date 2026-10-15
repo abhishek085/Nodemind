@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { LivePartial } from "../components/capture";
 import { FogList, FogTag } from "../components/fog";
+import { KindBadge } from "../components/items";
 import type { CalendarEvent, Today, TodayTask, TodayThought } from "../lib/types";
 
 interface Props {
@@ -73,7 +74,7 @@ export default function TodayView({ refreshKey }: Props) {
           </div>
           <div className="space-y-4 lg:col-span-2">
             <StuckCard thoughts={today?.thoughts ?? []} />
-            <Thoughts thoughts={today?.thoughts ?? []} onChanged={load} />
+            <Thoughts thoughts={today?.thoughts ?? []} noiseCount={today?.noiseCount ?? 0} onChanged={load} />
             <CalendarCard events={events} hint={calendarHint} onResync={loadCalendar} />
           </div>
         </div>
@@ -249,7 +250,15 @@ function StuckCard({ thoughts }: { thoughts: TodayThought[] }) {
 
 // ── today's thoughts ────────────────────────────────────────────────────────
 
-function Thoughts({ thoughts, onChanged }: { thoughts: TodayThought[]; onChanged: () => void }) {
+function Thoughts({
+  thoughts,
+  noiseCount,
+  onChanged,
+}: {
+  thoughts: TodayThought[];
+  noiseCount: number;
+  onChanged: () => void;
+}) {
   const [open, setOpen] = useState<string | null>(null);
 
   const remove = async (t: TodayThought) => {
@@ -263,7 +272,9 @@ function Thoughts({ thoughts, onChanged }: { thoughts: TodayThought[]; onChanged
     <section className="rounded-2xl bg-surface p-5 shadow-sm fade-up">
       <h3 className="mb-3 text-sm font-bold">Today's thoughts</h3>
       {thoughts.length === 0 ? (
-        <p className="py-4 text-center text-xs text-ink-3">Nothing captured yet today.</p>
+        <p className="py-4 text-center text-xs text-ink-3">
+          {noiseCount > 0 ? "Nothing worth keeping yet today." : "Nothing captured yet today."}
+        </p>
       ) : (
         <ol className="relative space-y-1 border-l border-line pl-4">
           {thoughts.map((t) => (
@@ -283,6 +294,19 @@ function Thoughts({ thoughts, onChanged }: { thoughts: TodayThought[]; onChanged
                   {t.taskCount > 0 && ` · ${plural(t.taskCount, "task")}`}
                 </p>
                 <p className="mt-0.5 text-[13px] font-medium leading-snug text-ink">{t.title}</p>
+                {t.items.length > 0 && (
+                  <ul className="mt-1.5 space-y-1">
+                    {t.items.slice(0, open === t.id ? undefined : 3).map((i) => (
+                      <li key={i.id} className="flex items-start gap-1.5 text-xs leading-snug text-ink-2">
+                        <KindBadge kind={i.kind} />
+                        <span>{i.text}</span>
+                      </li>
+                    ))}
+                    {open !== t.id && t.items.length > 3 && (
+                      <li className="text-[11px] text-ink-3">+{t.items.length - 3} more</li>
+                    )}
+                  </ul>
+                )}
                 {(t.fog ?? []).length > 0 && (
                   <span className="mt-1 inline-flex gap-1">
                     {(t.fog ?? []).map((f, i) => (
@@ -333,6 +357,11 @@ function Thoughts({ thoughts, onChanged }: { thoughts: TodayThought[]; onChanged
             </li>
           ))}
         </ol>
+      )}
+      {noiseCount > 0 && thoughts.length > 0 && (
+        <p className="mt-2 pl-4 text-[11px] text-ink-3">
+          +{plural(noiseCount, "recording")} with nothing to keep
+        </p>
       )}
     </section>
   );

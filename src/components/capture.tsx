@@ -1,9 +1,10 @@
 // Capture UI pieces shared by the full Capture view and the menu-bar popover.
 // Purely presentational: state lives in lib/useCapture.ts.
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import * as api from "../lib/api";
 import { FogCard } from "./fog";
+import { ItemGroups } from "./items";
 import type { ActionItem, CaptureMode, CaptureResult, CaptureStage } from "../lib/types";
 
 export function fmtClock(s: number): string {
@@ -161,11 +162,6 @@ export function NothingHeard({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function Chip({ children, tone }: { children: ReactNode; tone: "accent" | "neutral" }) {
-  const cls = tone === "accent" ? "bg-accent/12 text-accent" : "bg-surface-2 text-ink-2";
-  return <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${cls}`}>{children}</span>;
-}
-
 /**
  * What a capture produced. Tasks are already on Today — each can be undone
  * here, which is quicker than accepting items one by one. Meetings show
@@ -180,6 +176,7 @@ export function ResultBody({
   onChange: (r: CaptureResult) => void;
   compact?: boolean;
 }) {
+  if (result.noise) return <NothingToKeep result={result} />;
   if (result.minutes) return <MinutesBody result={result} onChange={onChange} compact={compact} />;
   return <NoteBody result={result} onChange={onChange} compact={compact} />;
 }
@@ -275,6 +272,9 @@ function MinutesBody({ result, onChange, compact }: BodyProps) {
       ) : (
         <p className="text-xs text-ink-3">No action items for you in this one.</p>
       )}
+      {result.items.some((i) => i.kind !== "decision") && (
+        <ItemGroups items={result.items.filter((i) => i.kind !== "decision")} />
+      )}
       {theirs.length > 0 && (
         <div>
           <h4 className="mb-1.5 text-sm font-bold">Others' action items</h4>
@@ -294,34 +294,33 @@ function MinutesBody({ result, onChange, compact }: BodyProps) {
 }
 
 /** Brain-dump result: summary, tasks on Today, what joined the mind map. */
+/** Small talk or a test: nothing was kept, and that's fine. */
+function NothingToKeep({ result }: { result: CaptureResult }) {
+  return (
+    <div className="space-y-3 text-left">
+      <p className="text-sm font-semibold">Nothing to keep</p>
+      <p className="text-xs text-ink-3">
+        That sounded like small talk or a test, so nothing went to your checklist or mind map.
+        Say what you need to do, decided, wonder or realized, and it'll be picked up.
+      </p>
+      <TranscriptToggle text={result.transcript} />
+    </div>
+  );
+}
+
+/** Brain-dump: tasks (on Today), then what else was worth keeping. */
 function NoteBody({ result, onChange, compact }: BodyProps) {
+  const about = [...result.topics, ...result.people];
   return (
     <div className="space-y-4 text-left">
-      {result.summary && (
-        <p className="rounded-lg bg-accent/8 px-3 py-2 text-xs text-ink">
-          <span className="font-semibold text-accent">In short: </span>
-          {result.summary}
+      {result.tasks.length > 0 && <AddedTasks result={result} onChange={onChange} heading="Added to Today" />}
+      {result.items.length > 0 && <ItemGroups items={result.items} />}
+      <FogCard signals={result.fog ?? []} />
+      {about.length > 0 && (
+        <p className="text-[11px] text-ink-3">
+          About: {about.slice(0, compact ? 4 : 10).join(" · ")}
         </p>
       )}
-
-      <FogCard signals={result.fog ?? []} />
-      {result.tasks.length > 0 ? (
-        <AddedTasks result={result} onChange={onChange} heading="Added to Today" />
-      ) : (
-        <p className="text-xs text-ink-3">No tasks in this one — it's saved to your mind map.</p>
-      )}
-
-      {(result.topics.length > 0 || result.people.length > 0) && (
-        <div className="flex flex-wrap gap-2">
-          {result.topics.slice(0, compact ? 4 : 12).map((t) => (
-            <Chip key={`t-${t}`} tone="accent">#{t}</Chip>
-          ))}
-          {result.people.slice(0, compact ? 3 : 12).map((p) => (
-            <Chip key={`p-${p}`} tone="neutral">👤 {p}</Chip>
-          ))}
-        </div>
-      )}
-
       {!compact && <TranscriptDetails result={result} />}
     </div>
   );

@@ -1,11 +1,11 @@
 //! Mind-map links, decided by EmbeddingGemma 2 rather than guessed by the LLM.
 //!
-//! - **similar** (thought ↔ thought): a thought links to the few earlier
-//!   thoughts that stand out as close in meaning. EmbeddingGemma's cosine
-//!   scores run high for unrelated speech (~0.65–0.8), so "close" means a lift
-//!   above this thought's *median* similarity, never a fixed number.
-//! - **fog** (thought → fog pattern): one node per fog type, so recurring
-//!   overthinking or overwhelm shows up as a hub.
+//! - **similar** (item ↔ item): an idea / learning / question / decision
+//!   links to the few earlier items that stand out as close in meaning, so the
+//!   same theme connects across days. EmbeddingGemma's cosine runs high even
+//!   for unrelated text (~0.6–0.8), so "close" means a lift above this item's
+//!   *median* similarity, never a fixed number.
+//! - **fog**: one hub per fog kind, so recurring overthinking shows as a hub.
 //! - Junk entities ("you", "the speaker", "notes") never enter the graph.
 
 use std::collections::HashMap;
@@ -44,25 +44,25 @@ pub fn is_junk_entity(kind: &str, label: &str) -> bool {
     l.len() < 2 || generic.contains(&l.as_str()) || (kind == "goal" && words < 2)
 }
 
-/// Link `thought_id` to its closest earlier thoughts. Returns the linked ids.
-pub fn link_similar(conn: &Connection, thought_id: &str) -> Result<Vec<String>> {
-    let vectors = thought_vectors(conn)?;
-    let Some(me) = vectors.get(thought_id) else {
+/// Link an item to its closest other items. Returns the linked ids.
+pub fn link_similar(conn: &Connection, item_id: &str) -> Result<Vec<String>> {
+    let vectors = item_vectors(conn)?;
+    let Some(me) = vectors.get(item_id) else {
         return Ok(Vec::new());
     };
-    let neighbours = pick_neighbours(me, vectors.iter().filter(|(id, _)| id.as_str() != thought_id));
+    let neighbours = pick_neighbours(me, vectors.iter().filter(|(id, _)| id.as_str() != item_id));
     for (id, lift) in &neighbours {
-        graph::upsert_weighted_edge(conn, thought_id, id, "similar", 1.0 + lift * 10.0)?;
+        graph::upsert_weighted_edge(conn, item_id, id, "similar", 1.0 + lift * 10.0)?;
     }
     Ok(neighbours.into_iter().map(|(id, _)| id).collect())
 }
 
-/// Recompute every "similar" link (startup), dropping the LLM-guessed
-/// "relates_to" links older builds made.
+/// Recompute every "similar" link (startup), dropping link types older
+/// builds made.
 pub fn rebuild_similar(conn: &Connection) -> Result<usize> {
     conn.execute("DELETE FROM graph_edges WHERE edge_type IN ('similar', 'relates_to')", [])
         .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    let vectors = thought_vectors(conn)?;
+    let vectors = item_vectors(conn)?;
     let mut n = 0;
     for (id, v) in &vectors {
         for (other, lift) in pick_neighbours(v, vectors.iter().filter(|(o, _)| *o != id)) {
@@ -99,8 +99,8 @@ pub fn refresh_in_background(state: std::sync::Arc<crate::state::AppState>) {
     });
 }
 
-fn thought_vectors(conn: &Connection) -> Result<HashMap<String, Vec<f32>>> {
-    Ok(vec_::all_vectors(conn, EMBED_MODEL, "thought")?.into_iter().collect())
+fn item_vectors(conn: &Connection) -> Result<HashMap<String, Vec<f32>>> {
+    Ok(vec_::all_vectors(conn, EMBED_MODEL, "item")?.into_iter().collect())
 }
 
 /// Neighbours that clear the bar, closest first: (id, lift over median).

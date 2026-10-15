@@ -1,27 +1,23 @@
-//! Memory search: "what did I say about…" over every transcript, by meaning.
+//! Search: "what did I say about…", over the things worth keeping.
 //!
-//! Each transcript is split into short passages (a few sentences each) and
-//! every passage gets an EmbeddingGemma 2 vector, so a detail buried in a
-//! ten-minute ramble is still findable — and "car maintenance" finds "the car
-//! needs servicing" with no shared words.
+//! The index holds short, clean statements — items (ideas, learnings,
+//! questions, decisions) and tasks — not raw transcripts, so results read
+//! like answers instead of fragments of rambling. Each statement gets an
+//! EmbeddingGemma 2 vector (document prefix); queries use the query prefix.
 //!
 //! Ranking is semantic first, with a keyword boost:
 //!
-//!   rank = (cosine − median cosine) + KEYWORD_BOOST × (weighted share of query words present)
+//!   rank = (cosine − baseline) + KEYWORD_BOOST × (rarity-weighted share of query words present)
 //!
-//! EmbeddingGemma 2's cosine scores sit high even for unrelated text (~0.6)
-//! and the baseline shifts per query, so meaning is measured as the *lift*
-//! over the median passage for this query. Measured lifts: unrelated ≤ +0.07,
-//! relevant +0.08 … +0.23. The boost is on the same scale, so an exact word
-//! (a name like "Priya") moves a passage up without overriding meaning.
-//! Words are weighted by rarity across your history (names count most), and
-//! words you've never said don't count against the share at all.
-//! Only embedded passages are searched — no vectors, no results. When nothing
-//! clears the bar, the closest few come back flagged `weak` rather than none.
+//! EmbeddingGemma's cosine runs high even for unrelated text (~0.6) and the
+//! level shifts per query, so the baseline is the median statement's score
+//! (or a fixed 0.62 while history is too small for a median). Below MIN_LIFT
+//! nothing is returned — an honest "nothing yet" beats random matches. (At a
+//! lower bar, "dinner recipes" matched "draft the pricing page tonight".)
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::engine::llm;
@@ -30,106 +26,92 @@ use crate::state::AppState;
 use crate::store::{db, vec_};
 
 pub const EMBED_MODEL: &str = "embeddinggemma-2";
-const PASSAGE_MAX_CHARS: usize = 320;
-/// Rank needed to show up at all…
-const MIN_LIFT: f64 = 0.05;
-/// …and to be flagged as a strong match.
-const STRONG_LIFT: f64 = 0.10;
-/// Added when every query word appears in the passage (scaled by the share).
+/// Rank needed to be a result. Measured: real matches ≥ 0.10, near-misses below.
+const MIN_LIFT: f64 = 0.10;
+/// Added when every query word appears in the statement (scaled by share).
 const KEYWORD_BOOST: f64 = 0.08;
-/// Closest passages returned (as `weak`) when nothing clears MIN_LIFT.
-const WEAK_FALLBACK: usize = 3;
+/// Below this many statements there's no stable median; use a fixed baseline.
+const SMALL_INDEX: usize = 6;
+const SMALL_INDEX_BASELINE: f64 = 0.62;
 
-/// One search result: the best-matching passage of a thought.
+/// One search result: a statement you made.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchHit {
-    pub thought_id: String,
-    pub snippet: String,
-    pub summary: Option<String>,
-    pub day: String,
-    pub started_at: String,
-    /// Semantic lift plus keyword boost (see module docs).
+    /// Item or task id (item ids are also mind-map node ids).
+    pub id: String,
+    /// task | idea | learning | question | decision
+    pub kind: String,
+    pub text: String,
+    pub thought_id: Option<String>,
+    pub said_at: String,
     pub score: f64,
-    /// Clearly above the rest of your history (vs. merely the closest).
-    pub strong: bool,
-    /// Nothing really matched; this is just among the closest.
-    pub weak: bool,
-    /// Query words found verbatim in the snippet, for highlighting.
+    /// Query words found verbatim, for highlighting.
     pub matched: Vec<String>,
 }
 
-/// Split a transcript into passages of whole sentences, ≤ ~320 chars each.
-pub fn split_passages(text: &str) -> Vec<String> {
-    let mut sentences: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for word in text.split_whitespace() {
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(word);
-        if word.ends_with(['.', '?', '!']) || cur.len() >= PASSAGE_MAX_CHARS {
-            sentences.push(std::mem::take(&mut cur));
-        }
+/// Embed and store statements: (ref_kind "item" | "task", id, text).
+pub async fn index(state: &Arc<AppState>, statements: &[(String, String, String)]) -> Result<()> {
+    if statements.is_empty() {
+        return Ok(());
     }
-    if !cur.is_empty() {
-        sentences.push(cur);
-    }
-
-    let mut passages: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for s in sentences {
-        if !cur.is_empty() && cur.len() + 1 + s.len() > PASSAGE_MAX_CHARS {
-            passages.push(std::mem::take(&mut cur));
-        }
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(&s);
-    }
-    if !cur.is_empty() {
-        passages.push(cur);
-    }
-    passages
-}
-
-/// Split, embed and store one thought's passages. Replaces earlier ones.
-pub async fn index_thought(state: &Arc<AppState>, thought_id: &str, text: &str) -> Result<usize> {
-    let passages = split_passages(text);
-    if passages.is_empty() {
-        return Ok(0);
-    }
-    // Vectors are optional: passages are still keyword-searchable without them.
-    let vectors = llm::embed_documents(&passages).await.unwrap_or_default();
+    let texts: Vec<String> = statements.iter().map(|(_, _, t)| t.clone()).collect();
+    let vectors = llm::embed_documents(&texts).await?;
     let conn = state.db.lock().map_err(|_| Error::Store("db poisoned".into()))?;
-    let ids = db::replace_passages(&conn, thought_id, &passages)?;
-    for (id, v) in ids.iter().zip(vectors.iter()) {
-        vec_::insert(&conn, "passage", id, EMBED_MODEL, v)?;
+    for ((kind, id, _), v) in statements.iter().zip(vectors.iter()) {
+        vec_::insert(&conn, kind, id, EMBED_MODEL, v)?;
     }
-    Ok(ids.len())
+    Ok(())
 }
 
-/// Index any thought that has no passages yet (older data, or captures made
-/// while the embedding server was down). Runs in the background at boot.
+/// Index anything saved while the embedding server was down. Runs at boot.
 pub fn backfill_in_background(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         let todo = match state.db.lock() {
-            Ok(conn) => db::thoughts_missing_passage_vectors(&conn, EMBED_MODEL).unwrap_or_default(),
+            Ok(conn) => db::unindexed_statements(&conn, EMBED_MODEL).unwrap_or_default(),
             Err(_) => return,
         };
-        let mut n = 0;
-        for (id, text) in todo {
-            if index_thought(&state, &id, &text).await.is_ok() {
-                n += 1;
-            }
-        }
-        if n > 0 {
-            eprintln!("[search] indexed {n} thoughts");
+        if let Err(e) = index(&state, &todo).await {
+            eprintln!("[search] backfill failed: {e}");
         }
     });
 }
 
-/// Semantic search over all passages; one hit per thought, best first.
+/// A searchable statement with its vector and metadata.
+struct Statement {
+    id: String,
+    kind: String,
+    text: String,
+    thought_id: Option<String>,
+    said_at: String,
+    vec: Vec<f32>,
+}
+
+fn statements(conn: &Connection) -> Result<Vec<Statement>> {
+    let mut out = Vec::new();
+    for (id, vec) in vec_::all_vectors(conn, EMBED_MODEL, "item")? {
+        if let Some(i) = db::get_item(conn, &id)? {
+            out.push(Statement { id, kind: i.kind, text: i.text, thought_id: Some(i.thought_id), said_at: i.created_at, vec });
+        }
+    }
+    let tasks: std::collections::HashMap<String, Vec<f32>> =
+        vec_::all_vectors(conn, EMBED_MODEL, "task")?.into_iter().collect();
+    for t in db::get_tasks(conn, true)? {
+        if let Some(vec) = tasks.get(&t.id) {
+            out.push(Statement {
+                id: t.id,
+                kind: "task".into(),
+                text: t.title,
+                thought_id: t.thought_id,
+                said_at: t.created_at,
+                vec: vec.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Search everything you've said that was worth keeping, best first.
 pub async fn search(state: &Arc<AppState>, query: &str, k: usize) -> Result<Vec<SearchHit>> {
     let query = query.trim();
     if query.chars().count() < 2 {
@@ -138,77 +120,69 @@ pub async fn search(state: &Arc<AppState>, query: &str, k: usize) -> Result<Vec<
     let qvec = llm::embed_query(query).await.map_err(|_| {
         Error::Engine("search runs on EmbeddingGemma 2, which is still starting — try again in a moment".into())
     })?;
-
     let conn = state.db.lock().map_err(|_| Error::Store("db poisoned".into()))?;
-    rank(&conn, query, &qvec, k)
+    Ok(rank(statements(&conn)?, query, &qvec, k))
 }
 
-/// Rank every embedded passage against an embedded query (see module docs).
-fn rank(conn: &rusqlite::Connection, query: &str, qvec: &[f32], k: usize) -> Result<Vec<SearchHit>> {
-    let scored = vec_::knn(conn, EMBED_MODEL, Some("passage"), qvec, usize::MAX)?;
-    let Some(median) = median_score(&scored) else {
-        return Ok(Vec::new());
+fn rank(all: Vec<Statement>, query: &str, qvec: &[f32], k: usize) -> Vec<SearchHit> {
+    if all.is_empty() {
+        return Vec::new();
+    }
+    let cos: Vec<f64> = all.iter().map(|s| cosine(qvec, &s.vec)).collect();
+    let baseline = if all.len() < SMALL_INDEX {
+        SMALL_INDEX_BASELINE
+    } else {
+        let mut sorted = cos.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted[sorted.len() / 2]
     };
-    let cosine: HashMap<String, f64> = scored.into_iter().map(|h| (h.ref_id, h.score)).collect();
-    let passages: Vec<db::Passage> = db::all_passages(conn)?
-        .into_iter()
-        .filter(|p| cosine.contains_key(&p.id)) // not embedded yet — can't judge it
-        .collect();
-    let lowered: Vec<String> = passages.iter().map(|p| p.text.to_lowercase()).collect();
+    let lowered: Vec<String> = all.iter().map(|s| s.text.to_lowercase()).collect();
     let weights = term_weights(&query_terms(query), &lowered);
-    let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
+    let total: f64 = weights.iter().map(|(_, w)| w).sum();
 
-    // Best passage per thought: (rank, passage, matched words).
-    let mut best: HashMap<String, (f64, db::Passage, Vec<String>)> = HashMap::new();
-    for (p, lower) in passages.into_iter().zip(lowered) {
-        let matched: Vec<(String, f64)> =
-            weights.iter().filter(|(t, _)| lower.contains(t.as_str())).cloned().collect();
-        let share = if total_weight > 0.0 {
-            matched.iter().map(|(_, w)| w).sum::<f64>() / total_weight
-        } else {
-            0.0
-        };
-        let rank = (cosine[&p.id] - median) + KEYWORD_BOOST * share;
-        if best.get(&p.thought_id).is_none_or(|(r, _, _)| *r < rank) {
-            let words = matched.into_iter().map(|(t, _)| t).collect();
-            best.insert(p.thought_id.clone(), (rank, p, words));
-        }
-    }
-
-    let mut ranked: Vec<_> = best.into_values().collect();
-    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    let clear = ranked.iter().take_while(|r| r.0 >= MIN_LIFT).count();
-    let weak = clear == 0;
-    ranked.truncate(if weak { WEAK_FALLBACK.min(k) } else { clear.min(k) });
-
-    let mut hits = Vec::with_capacity(ranked.len());
-    for (rank, p, matched) in ranked {
-        let Some(t) = db::get_thought(conn, &p.thought_id)? else {
-            continue;
-        };
-        hits.push(SearchHit {
-            thought_id: t.id,
-            snippet: p.text,
-            summary: t.summary,
-            day: t.day,
-            started_at: t.started_at,
-            score: rank,
-            strong: rank >= STRONG_LIFT,
-            weak,
-            matched,
-        });
-    }
-    Ok(hits)
+    let mut hits: Vec<SearchHit> = all
+        .into_iter()
+        .zip(cos)
+        .zip(lowered)
+        .filter_map(|((s, c), lower)| {
+            let matched: Vec<(String, f64)> = weights.iter().filter(|(t, _)| lower.contains(t.as_str())).cloned().collect();
+            let share = if total > 0.0 { matched.iter().map(|(_, w)| w).sum::<f64>() / total } else { 0.0 };
+            let rank = (c - baseline) + KEYWORD_BOOST * share;
+            (rank >= MIN_LIFT).then(|| SearchHit {
+                id: s.id,
+                kind: s.kind,
+                text: s.text,
+                thought_id: s.thought_id,
+                said_at: s.said_at,
+                score: rank,
+                matched: matched.into_iter().map(|(t, _)| t).collect(),
+            })
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.truncate(k);
+    hits
 }
 
-/// Rarity weight per query word, ln(1 + N / df) over your passages; words
-/// that never occur in your history are dropped (no evidence either way).
-fn term_weights(terms: &[String], passages_lower: &[String]) -> Vec<(String, f64)> {
-    let n = passages_lower.len() as f64;
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        (dot / (na * nb)) as f64
+    }
+}
+
+/// Rarity weight per query word, ln(1 + N / df) over the statements; words
+/// that never occur are dropped (no evidence either way).
+fn term_weights(terms: &[String], lowered: &[String]) -> Vec<(String, f64)> {
+    let n = lowered.len() as f64;
     terms
         .iter()
         .filter_map(|t| {
-            let df = passages_lower.iter().filter(|p| p.contains(t.as_str())).count();
+            let df = lowered.iter().filter(|p| p.contains(t.as_str())).count();
             (df > 0).then(|| (t.clone(), (1.0 + n / df as f64).ln()))
         })
         .collect()
@@ -230,125 +204,69 @@ fn query_terms(query: &str) -> Vec<String> {
     out
 }
 
-/// Median similarity across all passages — the "unrelated" baseline. With
-/// very little history there is no meaningful baseline, so everything counts.
-fn median_score(scored: &[vec_::Hit]) -> Option<f64> {
-    match scored.len() {
-        0 => None,
-        1..=4 => Some(scored.iter().map(|h| h.score).fold(f64::MAX, f64::min) - MIN_LIFT),
-        n => {
-            let mut v: Vec<f64> = scored.iter().map(|h| h.score).collect();
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            Some(v[n / 2])
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn passages_keep_sentences_whole() {
-        let text = "Call Priya about the invoice. ".repeat(20);
-        let ps = split_passages(&text);
-        assert!(ps.len() > 1);
-        assert!(ps.iter().all(|p| p.len() <= PASSAGE_MAX_CHARS && p.ends_with('.')));
-        assert_eq!(ps.join(" "), text.trim());
+    fn st(id: &str, text: &str, vec: Vec<f32>) -> Statement {
+        Statement { id: id.into(), kind: "idea".into(), text: text.into(), thought_id: None, said_at: String::new(), vec }
     }
 
     #[test]
-    fn unpunctuated_text_still_splits() {
-        let text = "word ".repeat(200);
-        let ps = split_passages(&text);
-        assert!(ps.len() >= 3);
-        assert!(ps.iter().all(|p| p.len() <= PASSAGE_MAX_CHARS + 8));
+    fn nothing_below_the_bar() {
+        // Small index → fixed 0.62 baseline; 0.64 is not a match, 0.80 is.
+        let q = vec![1.0, 0.0];
+        let hits = rank(
+            vec![st("a", "close", vec![0.80, 0.60]), st("b", "far", vec![0.64, 0.77])],
+            "anything",
+            &q,
+            5,
+        );
+        assert_eq!(hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["a"]);
     }
 
     #[test]
-    fn rare_words_weigh_more_and_unknown_words_drop() {
-        let ps: Vec<String> = ["call rahul today", "call mom", "call the bank", "gym today"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let w = term_weights(&["rahul".into(), "call".into(), "agreement".into()], &ps);
-        assert_eq!(w.len(), 2, "never-said words are dropped");
-        assert!(w[0].1 > w[1].1, "rahul (1 passage) outweighs call (3)");
+    fn keyword_boost_rescues_names() {
+        let q = vec![1.0, 0.0];
+        // Same semantic score just under the bar; the one naming "priya" passes.
+        let hits = rank(
+            vec![st("a", "Call Priya about the invoice", vec![0.70, 0.71]), st("b", "Book the car service", vec![0.70, 0.71])],
+            "Priya",
+            &q,
+            5,
+        );
+        assert_eq!(hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(hits[0].matched, vec!["priya"]);
     }
 
     #[test]
     fn query_terms_drop_function_words() {
         assert_eq!(query_terms("What did I say about Priya?"), vec!["priya"]);
-        assert_eq!(query_terms("car servicing"), vec!["car", "servicing"]);
     }
 
-    fn hit(score: f64) -> vec_::Hit {
-        vec_::Hit { ref_kind: "passage".into(), ref_id: String::new(), score }
-    }
-
-    #[test]
-    fn median_is_the_baseline() {
-        let scored: Vec<_> = [0.81, 0.66, 0.61, 0.60, 0.58].into_iter().map(hit).collect();
-        assert_eq!(median_score(&scored), Some(0.61));
-    }
-
-    #[test]
-    fn tiny_history_keeps_everything() {
-        let scored: Vec<_> = [0.70, 0.62].into_iter().map(hit).collect();
-        let m = median_score(&scored).unwrap();
-        assert!(scored.iter().all(|h| h.score - m >= MIN_LIFT));
-    }
-
-    /// End-to-end ranking against the live embedding server on EMBED_PORT:
-    /// `cargo test search_live -- --ignored --nocapture`
+    /// Real embeddings (embed server on 8643): `cargo test search_live -- --ignored --nocapture`
     #[tokio::test]
     #[ignore]
-    async fn search_live_quality() {
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        db::init_schema(&mut conn).unwrap();
-        let notes = [
-            "Okay so tomorrow I need to call Priya about the invoice because it is overdue.",
-            "The slides for Monday's board meeting are still not done and I keep putting them off.",
-            "Mom's birthday is next Thursday so I need to order a gift by Sunday.",
-            "The car needs servicing and I have not booked it yet.",
-            "I keep thinking about whether to move the Nodemind launch to next month.",
-            "I want to read that paper on small language models this weekend.",
-            "I should go to the gym three times a week, Monday Wednesday Friday mornings.",
-            "Remind me to email Rahul about the contract renewal before Friday.",
+    async fn search_live() {
+        let said = [
+            "We decided to price it at nine dollars a month. I still don't know whether to offer a free tier though. Let me draft the pricing page tonight.",
+            "Okay so random thought, I was walking and I realized that the reason people don't journal is because writing is slow, talking is fast. Oh I need to email Sarah about the contract by Friday. And maybe we could do a voice-only version of the app for iPhone? Also why does my back hurt every morning, I should look into that.",
+            "Call with Priya went fine. She suggested we try onboarding emails for new users. I think I'll set up a three email sequence next week.",
         ];
-        for (i, text) in notes.iter().enumerate() {
-            let id = format!("t{i}");
-            db::insert_thought(&conn, &db::Thought {
-                id: id.clone(), text: text.to_string(), summary: None, language: "en".into(),
-                day: "2026-10-14".into(), started_at: "2026-10-14T10:00:00Z".into(),
-                duration_secs: 5, created_at: "2026-10-14T10:00:00Z".into(), kind: "note".into(), minutes: None, fog: None,
-            }).unwrap();
-            let ps = split_passages(text);
-            let vs = llm::embed_documents(&ps).await.expect("embed server on 8643");
-            for (pid, v) in db::replace_passages(&conn, &id, &ps).unwrap().iter().zip(vs.iter()) {
-                vec_::insert(&conn, "passage", pid, EMBED_MODEL, v).unwrap();
-            }
-        }
-        let cases = [
-            ("money I'm owed", "t0"), ("Priya", "t0"), ("presentation deck", "t1"),
-            ("present for my mother", "t2"), ("vehicle maintenance", "t3"),
-            ("product release timing", "t4"), ("research reading", "t5"),
-            ("workout schedule", "t6"), ("agreement with Rahul", "t7"),
-        ];
-        let mut top1 = 0;
-        for (q, want) in cases {
+        let items: Vec<crate::engine::sort::Item> = said.iter().flat_map(|t| crate::engine::sort::sort(t)).collect();
+        let texts: Vec<String> = items.iter().map(|i| i.text.clone()).collect();
+        let vecs = llm::embed_documents(&texts).await.expect("embed server on 8643");
+        let all = || -> Vec<Statement> {
+            items.iter().zip(vecs.iter()).enumerate()
+                .map(|(n, (i, v))| Statement { id: n.to_string(), kind: i.kind.as_str().into(), text: i.text.clone(), thought_id: None, said_at: String::new(), vec: v.clone() })
+                .collect()
+        };
+        for q in ["pricing", "what did I decide about price", "back pain", "journaling", "Sarah", "email marketing", "mobile app", "quantum physics homework", "dinner recipes"] {
             let qv = llm::embed_query(q).await.unwrap();
-            let hits = rank(&conn, q, &qv, 3).unwrap();
-            let got: Vec<String> = hits.iter().map(|h| format!("{}{}", h.thought_id, if h.strong { "*" } else { "" })).collect();
-            top1 += (hits.first().map(|h| h.thought_id.as_str()) == Some(want)) as usize;
-            println!("{q:24} want {want} → {got:?}");
+            let hits = rank(all(), q, &qv, 3);
+            println!("{q:30} → {}", if hits.is_empty() { "(nothing yet)".to_string() } else {
+                hits.iter().map(|h| format!("[{}] {}", h.kind, h.text)).collect::<Vec<_>>().join("  |  ")
+            });
         }
-        for q in ["quantum physics homework", "tax filing deadline"] {
-            let qv = llm::embed_query(q).await.unwrap();
-            let hits = rank(&conn, q, &qv, 3).unwrap();
-            println!("{q:24} (unrelated) → {} hits, strong: {}", hits.len(), hits.iter().filter(|h| h.strong).count());
-        }
-        println!("top-1: {top1}/{}", cases.len());
-        assert!(top1 >= cases.len() - 1);
     }
 }

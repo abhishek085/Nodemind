@@ -16,12 +16,14 @@ pub fn get_thought(state: State<'_, Arc<AppState>>, id: String) -> Result<Option
     db::get_thought(&conn, &id)
 }
 
-/// Delete a thought with its tasks, vectors, passages and graph node.
+/// Delete a recording with its tasks, items, vectors and map nodes.
 #[tauri::command]
 pub fn delete_thought(state: State<'_, Arc<AppState>>, id: String) -> Result<()> {
     let conn = state.db.lock().map_err(|_| crate::error::Error::Store("db".into()))?;
+    let items: Vec<String> = db::items_for_thought(&conn, &id)?.into_iter().map(|i| i.id).collect();
+    graph::unrecord_items(&conn, &items)?;
     db::delete_thought(&conn, &id)?;
-    graph::unrecord_thought(&conn, &id)?;
+    state.emit("tasks-updated", &serde_json::json!({}));
     Ok(())
 }
 
@@ -35,6 +37,9 @@ pub async fn add_task(
     title: String,
 ) -> Result<Option<crate::engine::tasks::TaskRef>> {
     let added = crate::engine::tasks::add_unique(state.inner(), vec![title], None).await?;
+    let statements: Vec<(String, String, String)> =
+        added.iter().map(|t| ("task".to_string(), t.id.clone(), t.title.clone())).collect();
+    let _ = crate::engine::search::index(state.inner(), &statements).await;
     state.emit("tasks-updated", &serde_json::json!({}));
     Ok(added.into_iter().next())
 }
@@ -77,8 +82,8 @@ pub fn get_graph(state: State<'_, Arc<AppState>>, limit: Option<u32>) -> Result<
     graph::get_graph(&conn, limit.unwrap_or(300) as i64)
 }
 
-/// Semantic search (EmbeddingGemma 2) over everything you've said:
-/// the best-matching passage per thought.
+/// Search what you said that was worth keeping (items + tasks), by meaning
+/// with a keyword boost (EmbeddingGemma 2).
 #[tauri::command]
 pub async fn search_memory(
     state: State<'_, Arc<AppState>>,
@@ -98,7 +103,10 @@ pub async fn search_memory(
 pub struct Today {
     pub day: String,
     pub tasks: Vec<TodayTask>,
+    /// Today's recordings that kept something.
     pub thoughts: Vec<TodayThought>,
+    /// Recordings today with nothing worth keeping (small talk, tests).
+    pub noise_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +141,8 @@ pub struct TodayThought {
     pub minutes: Option<serde_json::Value>,
     /// Where the thinking seemed stuck (engine::fog), if anywhere.
     pub fog: Option<serde_json::Value>,
+    /// Ideas, learnings, questions, decisions kept from it.
+    pub items: Vec<db::Item>,
     pub task_count: usize,
 }
 
@@ -182,8 +192,10 @@ pub fn get_today(state: State<'_, Arc<AppState>>) -> Result<Today> {
         tasks.push(TodayTask { id: t.id, title: t.title, created_at: t.created_at, source });
     }
 
+    let noise_count = todays.iter().filter(|t| t.noise).count();
     let thoughts = todays
         .iter()
+        .filter(|t| !t.noise)
         .map(|t| TodayThought {
             id: t.id.clone(),
             kind: t.kind.clone(),
@@ -193,9 +205,10 @@ pub fn get_today(state: State<'_, Arc<AppState>>) -> Result<Today> {
             text: t.text.clone(),
             minutes: t.minutes.as_deref().and_then(|m| serde_json::from_str(m).ok()),
             fog: t.fog.as_deref().and_then(|f| serde_json::from_str(f).ok()),
+            items: db::items_for_thought(&conn, &t.id).unwrap_or_default(),
             task_count: all_tasks.iter().filter(|x| x.thought_id.as_deref() == Some(t.id.as_str())).count(),
         })
         .collect();
 
-    Ok(Today { day, tasks, thoughts })
+    Ok(Today { day, tasks, thoughts, noise_count })
 }

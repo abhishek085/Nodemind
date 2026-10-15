@@ -46,9 +46,10 @@ Nothing leaves the machine. There is no backend, no account, no telemetry.
 │                    tasks.rs      checklist entry point, duplicate check (filler + EmbeddingGemma)   │
 │                    fog.rs        where thinking is stuck: cue gate → model → cue verification       │
 │                    links.rs      thought↔thought "similar" links by EmbeddingGemma; junk filter     │
-│                    search.rs     passage index + semantic search with keyword boost                 │
+│                    search.rs     semantic search over items + tasks, with keyword boost             │
+│                    sort.rs       rules: what was said → task/idea/learning/question/decision        │
 │                    meeting.rs    You/Them transcript + map-reduce minutes                           │
-│  store/            db.rs         SQLite: thoughts · tasks · passages · calendar_day · meta          │
+│  store/            db.rs         SQLite: thoughts · tasks · items · calendar_day · meta             │
 │                    graph.rs      graph_nodes / graph_edges + fuzzy label merge (cosine ≥ 0.8)      │
 │                    vec_.rs       brute-force cosine kNN over f32 BLOBs (per-row model + dim)       │
 │  models/           manifest      pinned URLs + sha256 + expected sizes                              │
@@ -84,7 +85,7 @@ PCM (webview, 16 kHz mono s16le, base64 chunks → append_audio)
         ▼
 whisper-server ── ggml-small on Metal, one utterance per pause ──▶ transcript
         │
-        ├─ clean_checklist()   LLM: ramble → 3–6 crisp checklist items
+        ├─ sort()              rules: tasks · ideas · learnings · questions · decisions (noise → dropped)
         ├─ annotate()          LLM: summary · topics · people · goals · sentiment (junk filtered)
         ├─ parse_command()     LLM, only if the text *looks* like a direct command
         │                      (cheap regex pre-filter): create_task
@@ -113,7 +114,7 @@ an empty structure, never an error, so a capture always produces *something* use
 | `thoughts` | one per capture: text, summary, language, day, started_at, duration |
 | `tasks` | checklist items (from captures or manual), optional project, done flag |
 | `graph_nodes` | `id · node_type(thought\|topic\|person\|goal\|…) · label · mentions · last_seen · sentiment` — thought nodes are keyed by the thought UUID; entities by a label slug |
-| `graph_edges` | `from · to · edge_type(involves\|mentions\|supports\|relates_to) · weight` — upserted, weight strengthens with repetition |
+| `graph_edges` | `from · to · edge_type(involves\|similar\|fog) · weight` — upserted, weight strengthens with repetition |
 | `vectors` | `kind · ref_id · model · dim · f32 BLOB` — brute-force cosine kNN (fine at personal scale) |
 | `calendar_day` | last osascript snapshot per day (read-only mirror) |
 | `focus_sessions` | start/end, minutes |

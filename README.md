@@ -51,8 +51,8 @@ ever leaves this device.
 - **Hold-to-talk hotkey** — hold <kbd>⌥⇧Space</kbd> anywhere (or tap to start/stop); the result arrives as a notification
 - **Live transcription** — speech is transcribed at each pause while you talk, so the transcript is ready ~0.2 s after you stop
 - **Meeting notes** — records you (mic) and the call (your Mac's audio output) separately, so every line is labelled *You* / *Them*; when you stop, the local model writes minutes — summary, decisions, action items — and yours land on Today. Works with Zoom, Meet, Teams, anything playing on the Mac (macOS 14.2+)
-- **Checklist straight to Today** — cleaned tasks are added automatically (duplicates skipped); undo any that are wrong
-- **Search by meaning** — EmbeddingGemma 2 finds what you said even in different words ("car maintenance" → "the car needs servicing"), with a boost for exact names; <kbd>⌘K</kbd>
+- **Sorted, not transcribed** — what you say is sorted into tasks, ideas, learnings, questions and decisions; small talk and test chatter are dropped. Tasks go straight to Today (duplicates skipped, undo any)
+- **Search by meaning** — EmbeddingGemma 2 searches those clean statements even in different words ("pricing" → "we decided to price it at nine dollars"), with a boost for exact names, and says "nothing about that yet" instead of guessing; <kbd>⌘K</kbd>
 - **Mind map** — a force-directed map of your thoughts, the topics and people they share, links between similar thoughts (EmbeddingGemma 2), and recurring fog patterns; hover to trace connections, click for details
 - **Direct voice commands** — "remind me to call Sam" becomes a task, even mid-ramble
 - **Today view** — your checklist grouped by the thought it came from (no duplicates), a timeline of today's notes and meetings, and your calendar
@@ -65,7 +65,7 @@ ever leaves this device.
 | Shell | [Tauri 2](https://tauri.app) (Rust) + React 19 + Tailwind v4 |
 | Speech→Text | `whisper-server` (whisper.cpp v1.9.5, Metal) kept loaded for live, per-pause transcription; `whisper-cli` fallback — bundled sidecars |
 | Reasoning | `llama-server` (llama.cpp b11609, Metal) hosting Qwen3.5 0.8B (Q4_K_M) — bundled sidecar |
-| Memory & search | EmbeddingGemma 2 vectors per transcript passage (semantic search + graph linking) + SQLite graph store, all in your app-data folder |
+| Memory & search | EmbeddingGemma 2 vectors per idea / question / decision / task (semantic search + similar-item links) + SQLite graph store, all in your app-data folder |
 | Calendar | Read-only via EventKit (all accounts, instant), AppleScript fallback |
 | macOS bridge | `nodemind-helper` (Swift) — EventKit calendar + Core Audio system-audio tap for meeting mode |
 | Distribution | Small DMG; models (~1.6 GB) download once on first launch · signed updater via GitHub Releases |

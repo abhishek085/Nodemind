@@ -1,6 +1,9 @@
-//! The thought graph: nodes (thoughts, tasks, topics, people, goals) and
-//! edges, with vector-based fuzzy merging so "bank call" and "call the bank"
-//! become one node instead of two.
+//! The mind map's storage: nodes and edges.
+//!
+//! Nodes are the items people said (idea / learning / question / decision,
+//! one node each), the entities those are about (topic / person / goal,
+//! fuzzy-merged by vector so "bank call" and "call the bank" are one node),
+//! and fog patterns (one hub per kind).
 
 use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
@@ -20,13 +23,13 @@ pub struct NodeView {
     pub label: String,
     pub mentions: i64,
     pub sentiment: String,
-    /// For `thought` nodes: a short excerpt of the transcript.
-    pub excerpt: Option<String>,
-    /// For `thought` nodes: the derived summary, if any.
-    pub summary: Option<String>,
+    /// RFC 3339; for item nodes, when it was said.
     pub last_seen: Option<String>,
     pub degree: i64,
+    /// For item nodes: the recording it came from.
+    pub thought_id: Option<String>,
 }
+
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,27 +155,14 @@ pub fn upsert_entity(
     Ok(Some(id))
 }
 
-/// Upsert a *thought* node, keyed by the thought's own id (stable UUID).
-///
-/// Thoughts are unique events — unlike topic/person/goal entities they are
-/// never fuzzy-merged by label — so the graph node id is the thought id.
-/// `get_graph` relies on this to join excerpts back from the `thoughts` table.
-pub fn upsert_thought_node(
-    conn: &Connection,
-    thought_id: &str,
-    label: &str,
-    sentiment: &str,
-) -> Result<()> {
-    let label = label.trim();
-    if label.len() < 2 {
-        return Ok(());
-    }
-    let now = crate::time::now_secs().to_string();
+/// Insert an item node (idea / learning / question / decision), keyed by
+/// the item's id. Items are never merged by label — each is something said.
+pub fn upsert_item_node(conn: &Connection, item_id: &str, kind: &str, text: &str, said_at: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO graph_nodes (id, node_type, label, mentions, last_seen, sentiment)
-         VALUES (?1, 'thought', ?2, 1, ?3, ?4)
-         ON CONFLICT(id) DO UPDATE SET mentions = mentions + 1, last_seen = excluded.last_seen, sentiment = excluded.sentiment",
-        params![thought_id, label, now, sentiment],
+         VALUES (?1, ?2, ?3, 1, ?4, 'neutral')
+         ON CONFLICT(id) DO UPDATE SET label = excluded.label",
+        params![item_id, kind, text.trim(), said_at],
     )
     .map_err(|e| crate::error::Error::Store(e.to_string()))?;
     Ok(())
@@ -194,10 +184,6 @@ pub fn upsert_edge(conn: &Connection, from: &str, to: &str, edge_type: &str) -> 
     Ok(())
 }
 
-/// Delete a node, its edges, and its vector.
-/// Reserved for the node-editing UI (graph context menu) — not yet exposed
-/// over IPC.
-#[allow(dead_code)]
 /// Insert or overwrite an edge with an explicit weight (computed links,
 /// e.g. EmbeddingGemma similarity — unlike `upsert_edge`, which counts).
 pub fn upsert_weighted_edge(conn: &Connection, from: &str, to: &str, edge_type: &str, weight: f64) -> Result<()> {
@@ -216,6 +202,7 @@ pub fn upsert_weighted_edge(conn: &Connection, from: &str, to: &str, edge_type: 
     Ok(())
 }
 
+/// Delete a node, its edges, and its vector.
 pub fn delete_node(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM graph_nodes WHERE id = ?1", params![id])
         .map_err(|e| crate::error::Error::Store(e.to_string()))?;
@@ -260,58 +247,30 @@ pub fn get_graph(conn: &Connection, limit: i64) -> Result<GraphData> {
             m
         });
 
-    // Attach thought excerpts for thought nodes.
-    let views = nodes.iter().map(|n| NodeView {
-        id: n.id.clone(),
-        node_type: n.node_type.clone(),
-        label: n.label.clone(),
-        mentions: n.mentions,
-        sentiment: n.sentiment.clone(),
-        excerpt: None,
-        summary: None,
-        last_seen: n.last_seen.clone(),
-        degree: degree.get(n.id.as_str()).copied().unwrap_or(0),
-    });
-
-    let mut out: Vec<NodeView> = views.collect();
-    // Enrich thought nodes with excerpt + summary (batched).
-    let thought_ids: Vec<String> = out
-        .iter()
-        .filter(|n| n.node_type == "thought")
-        .map(|n| n.id.clone())
-        .collect();
-    if !thought_ids.is_empty() {
-        let list = thought_ids
-            .iter()
-            .map(|s| format!("'{s}'"))
-            .collect::<Vec<_>>()
-            .join(",");
+    // Items know which recording they came from.
+    let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    {
         let mut stmt = conn
-            .prepare(&format!(
-                "SELECT id, substr(text, 1, 220), summary FROM thoughts WHERE id IN ({list})"
-            ))
+            .prepare("SELECT id, thought_id FROM items")
             .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-        let mut found = std::collections::HashMap::new();
-        if let Ok(rows) = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-            ))
-        }) {
-            for r in rows.flatten() {
-                found.insert(r.0, (r.1, r.2));
-            }
-        }
-        for v in out.iter_mut() {
-            if v.node_type == "thought" {
-                if let Some((excerpt, summary)) = found.get(v.id.as_str()) {
-                    v.excerpt = Some(excerpt.clone());
-                    v.summary = summary.clone();
-                }
-            }
-        }
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+        sources.extend(rows.flatten());
     }
+    let mut out: Vec<NodeView> = nodes
+        .iter()
+        .map(|n| NodeView {
+            id: n.id.clone(),
+            node_type: n.node_type.clone(),
+            label: n.label.clone(),
+            mentions: n.mentions,
+            sentiment: n.sentiment.clone(),
+            last_seen: n.last_seen.as_deref().map(rfc3339),
+            degree: degree.get(n.id.as_str()).copied().unwrap_or(0),
+            thought_id: sources.get(&n.id).cloned(),
+        })
+        .collect();
 
     out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
     out.truncate(limit as usize);
@@ -325,33 +284,20 @@ pub fn get_graph(conn: &Connection, limit: i64) -> Result<GraphData> {
     Ok(GraphData { nodes: out, edges })
 }
 
-/// Single-node fetch. Reserved for the node-detail UI — not yet exposed
-/// over IPC (the graph view currently receives the full dataset).
-#[allow(dead_code)]
-pub fn get_node(conn: &Connection, id: &str) -> Result<Option<GraphNode>> {
-    let mut stmt = conn
-        .prepare("SELECT id, node_type, label, mentions, last_seen, sentiment FROM graph_nodes WHERE id = ?1")
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    let one = stmt
-        .query_row(params![id], row_to_node)
-        .optional()
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    Ok(one)
+/// Remove the item nodes of a recording (and their edges).
+pub fn unrecord_items(conn: &Connection, item_ids: &[String]) -> Result<()> {
+    for id in item_ids {
+        delete_node(conn, id)?;
+    }
+    Ok(())
 }
 
-/// Delete a thought's node + its edges (tasks themselves stay).
-pub fn unrecord_thought(conn: &Connection, thought_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM graph_nodes WHERE id = ?1",
-        params![thought_id],
-    )
-    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    conn.execute(
-        "DELETE FROM graph_edges WHERE from_node = ?1 OR to_node = ?1",
-        params![thought_id],
-    )
-    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    Ok(())
+/// Older builds stored `last_seen` as unix seconds; the UI wants RFC 3339.
+fn rfc3339(v: &str) -> String {
+    match v.parse::<i64>() {
+        Ok(secs) => chrono::DateTime::from_timestamp(secs, 0).map(|d| d.to_rfc3339()).unwrap_or_else(|| v.to_string()),
+        Err(_) => v.to_string(),
+    }
 }
 
 #[cfg(test)]

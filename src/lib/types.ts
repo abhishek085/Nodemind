@@ -49,20 +49,18 @@ export interface TaskRef {
   title: string;
 }
 
-export interface CommandIntent {
-  intent: "create_task" | "unknown";
-  title: string | null;
-}
-
 export interface CaptureResult {
   thoughtId: string;
   transcript: string;
   summary: string | null;
+  /** Tasks, already added to Today. */
   tasks: TaskRef[];
+  /** Ideas, learnings, questions, decisions. */
+  items: ItemRef[];
   topics: string[];
   people: string[];
-  related: string[];
-  command: CommandIntent | null;
+  /** Nothing worth keeping was said (small talk, a test). */
+  noise: boolean;
   durationSecs: number;
   mode: CaptureMode;
   /** Meeting mode only. */
@@ -120,13 +118,20 @@ export interface Task {
   createdAt: string;
 }
 
-export type NodeType =
-  | "thought"
-  | "topic"
-  | "person"
-  | "goal"
-  | "task"
-  | "fog";
+/** Mind-map node types: items said (engine/sort.rs), what they're about, fog. */
+export type NodeType = "idea" | "learning" | "question" | "decision" | "topic" | "person" | "goal" | "fog";
+
+/** An idea / learning / question / decision kept from a recording. */
+export interface ItemRef {
+  id: string;
+  kind: "idea" | "learning" | "question" | "decision";
+  text: string;
+}
+
+export interface Item extends ItemRef {
+  thoughtId: string;
+  createdAt: string;
+}
 
 export interface GraphEdge {
   id: string;
@@ -142,10 +147,11 @@ export interface NodeView {
   label: string;
   mentions: number;
   sentiment: string; // positive | neutral | negative
-  excerpt: string | null;
-  summary: string | null;
+  /** RFC 3339; for items, when it was said. */
   lastSeen: string | null;
   degree: number;
+  /** For items: the recording it came from. */
+  thoughtId: string | null;
 }
 
 export interface GraphData {
@@ -153,22 +159,18 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
-/** Best-matching passage of one thought (see engine/search.rs). */
+/** A statement you made that matches a search (engine/search.rs). */
 export interface SearchHit {
-  thoughtId: string;
-  snippet: string;
-  summary: string | null;
-  day: string; // YYYY-MM-DD (local)
-  startedAt: string;
+  /** Item or task id; item ids are also mind-map node ids. */
+  id: string;
+  kind: "task" | "idea" | "learning" | "question" | "decision";
+  text: string;
+  thoughtId: string | null;
+  saidAt: string;
   score: number;
-  /** Clearly above the rest of your history, not just the closest. */
-  strong: boolean;
-  /** Nothing clearly matched; these are just the closest. */
-  weak: boolean;
-  /** Query words found verbatim in the snippet. */
+  /** Query words found verbatim, for highlighting. */
   matched: string[];
 }
-
 // ── Calendar / today / focus ────────────────────────────────────────────────
 
 export interface CalendarEvent {
@@ -191,7 +193,10 @@ export interface CalendarSync {
 export interface Today {
   day: string;
   tasks: TodayTask[];
+  /** Today's recordings that kept something. */
   thoughts: TodayThought[];
+  /** Recordings today with nothing worth keeping. */
+  noiseCount: number;
 }
 
 export interface TodayTask {
@@ -211,6 +216,7 @@ export interface TodayThought {
   text: string;
   minutes: MeetingMinutes | null;
   fog: FogSignal[] | null;
+  items: Item[];
   taskCount: number;
 }
 

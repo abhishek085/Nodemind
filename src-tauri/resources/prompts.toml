@@ -20,36 +20,6 @@
 hindi_initial_prompt = "This is a Hinglish conversation. Translate Hindi words to English."
 
 
-# ── Flagship: brain-dump → checklist ─────────────────────────────────────────
-# Lessons baked in from the web-app era:
-#   • "only what they said" is the #1 hallucination guard.
-#   • neutral examples (the web app saw few-shot examples leak verbatim).
-#   • temperature 0.1, max 512 tokens.
-[clean_checklist]
-system = """You convert a person's spoken brain-dump into a short to-do list.
-
-MOST IMPORTANT RULE: Only include tasks the person ACTUALLY said. Never invent, infer, guess, or add tasks that were not explicitly mentioned. If they mention 3 things, output exactly 3. Use only their own words and details — do not embellish.
-
-If the brain-dump contains NO actionable tasks (just feelings, musings, or chit-chat), output {"tasks": []}.
-
-Other rules:
-- Output ONLY valid JSON, exactly: {"tasks": ["task one", "task two"]}
-- Each task is a short, clear imperative starting with a verb.
-- Remove filler, hesitation, and repetition.
-- Merge repeated mentions of the same task into one.
-- If the person corrected themselves, keep only the corrected version.
-- No commentary, no preamble — only the JSON object.
-
-Examples:
-Brain-dump: "ugh I really need to water the plants, and remind me to renew my passport before the trip, and water the plants don't forget"
-JSON: {"tasks": ["Water the plants", "Renew passport before the trip"]}
-
-Brain-dump: "man today was exhausting, the weather's been so grey lately, I just want to relax"
-JSON: {"tasks": []}"""
-user = """Brain-dump:
-{text}"""
-
-
 # ── Thought annotation (feeds the graph) ─────────────────────────────────────
 # What a thought is ABOUT, so it can join the mind map. Related thoughts are
 # linked by EmbeddingGemma 2, not by this prompt. Temperature 0.2.
@@ -67,20 +37,6 @@ Return ONLY a valid JSON object, no fences:
 {"summary": "...", "topics": ["..."], "people": ["..."], "goals": [], "sentiment": "neutral"}"""
 user = """Brain-dump:
 {text}"""
-
-
-# ── Command parser (direct voice commands) ────────────────────────────────────
-# Only invoked when the transcript looks like a command (regex pre-filter).
-[parse_command]
-system = """You are a command parser for the Nodemind assistant.
-Current unix time: {now}
-
-Classify the spoken sentence. Return ONLY a valid JSON object. No markdown, no explanation.
-Schema:
-{"intent": "create_task" | "unknown", "title": "short imperative or null"}
-- "create_task": the user is asking to remember/add a task ("add a task to...", "remind me to...", "note that I should...").
-- "unknown": anything that is not a direct command (most sentences)."""
-user = """Spoken sentence: "{text}""""
 
 
 # ── Fog (where thinking is stuck) ────────────────────────────────────────────
@@ -129,8 +85,8 @@ user = """Meeting transcript:
 
 # ── Meeting action items ─────────────────────────────────────────────────────
 # Every commitment in a chunk, with its owner. Runs in parallel with the
-# minutes prompt. Temperature 0. The example uses an unrelated topic on
-# purpose (examples about the real topic leak into output).
+# minutes prompt. Temperature 0. The format is shown with placeholders only:
+# a concrete example ("water the garden") leaked into real meetings.
 [meeting_actions]
 system = """List EVERY commitment made in this meeting transcript: each time someone says they will do something, or that someone else will.
 Lines start with "You:" (the person you work for) or "Them:" (everyone else).
@@ -141,11 +97,9 @@ Owner rules:
 - "Them" when a "Them:" speaker commits without a name.
 - due: only a deadline said for THAT task, else "".
 
-Return ONLY valid JSON, no fences: {"action_items": [{"owner": "...", "task": "verb-first task", "due": "..."}]}
+If nobody committed to anything, return {"action_items": []}.
 
-Format example (different meeting):
-You: I'll water the garden. Them: Sam will buy seeds by Sunday.
-{"action_items": [{"owner": "You", "task": "Water the garden", "due": ""}, {"owner": "Sam", "task": "Buy seeds", "due": "Sunday"}]}"""
+Return ONLY valid JSON, no fences: {"action_items": [{"owner": "You | a name | Them", "task": "verb-first task", "due": "deadline or empty"}]}"""
 user = """Meeting transcript:
 {text}"""
 

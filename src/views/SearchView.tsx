@@ -10,12 +10,13 @@ export default function SearchView({ onShowInMap }: { onShowInMap: (thoughtId: s
         <SearchInput value={s.query} onChange={s.setQuery} busy={s.busy} autoFocus />
         {s.query.trim().length < 2 && (
           <p className="mt-4 text-xs leading-relaxed text-ink-3">
-            Ask the way you'd remember it — "what did I promise Rahul", "that idea about the
-            launch", "money stuff". Matches by meaning, so the words don't have to be the ones
-            you said. <kbd className="font-mono">⌘K</kbd> opens this from anywhere in the app.
+            Search the ideas, questions, decisions, learnings and tasks you've said — "pricing",
+            "what did I promise Rahul", "app ideas". It matches by meaning, so the words don't
+            have to be the ones you used. <kbd className="font-mono">⌘K</kbd> opens this from
+            anywhere in the app.
           </p>
         )}
-        <SearchResults hits={s.hits} query={s.query} error={s.error} onOpen={(h) => onShowInMap(h.thoughtId)} />
+        <SearchResults hits={s.hits} query={s.query} error={s.error} onOpen={(h) => onShowInMap(h.id)} />
       </div>
     </div>
   );

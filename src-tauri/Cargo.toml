@@ -34,6 +34,7 @@ tempfile = "3"
 futures-util = "0.3"
 cpal = "0.18.2"
 tauri-plugin-global-shortcut = "2.4.1"
+regex = "1.13.1"
 
 [profile.release]
 codegen-units = 1

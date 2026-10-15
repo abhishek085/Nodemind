@@ -4,6 +4,8 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as api from "../lib/api";
+import { LivePartial } from "./capture";
+import { KindBadge } from "./items";
 import type { SearchHit, Thought } from "../lib/types";
 
 /** Search as you type: a query embeds in ~50 ms, so 200 ms debounce is plenty. */
@@ -46,7 +48,7 @@ export function SearchInput({
   onChange,
   busy,
   autoFocus,
-  placeholder = "Search what you've said — by meaning…",
+  placeholder = "Search ideas, questions, decisions, tasks…",
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -90,15 +92,16 @@ function highlight(text: string, words: string[]): ReactNode {
   );
 }
 
-function fmtDay(day: string): string {
-  const d = new Date(`${day}T12:00:00`);
+function fmtWhen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
   const today = new Date();
-  const diff = Math.round((today.setHours(12, 0, 0, 0) - d.getTime()) / 86_400_000);
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Yesterday";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const days = Math.round((new Date(today.toDateString()).getTime() - new Date(d.toDateString()).getTime()) / 86_400_000);
+  const day = days === 0 ? "Today" : days === 1 ? "Yesterday" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${day} · ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
 }
 
+/** Statements you made that match, each expandable to its recording. */
 export function SearchResults({
   hits,
   query,
@@ -110,56 +113,55 @@ export function SearchResults({
   query: string;
   error: string | null;
   compact?: boolean;
-  /** Optional extra action per hit (e.g. "show in mind map"). */
+  /** Extra action for items (e.g. "show in mind map"); tasks aren't on the map. */
   onOpen?: (hit: SearchHit) => void;
 }) {
   const [open, setOpen] = useState<string | null>(null);
-  const [full, setFull] = useState<Thought | null>(null);
+  const [source, setSource] = useState<Thought | null>(null);
 
   const toggle = async (h: SearchHit) => {
-    if (open === h.thoughtId) {
+    if (open === h.id) {
       setOpen(null);
       return;
     }
-    setOpen(h.thoughtId);
-    setFull(null);
-    setFull(await api.getThought(h.thoughtId).catch(() => null));
+    setOpen(h.id);
+    setSource(null);
+    if (h.thoughtId) setSource(await api.getThought(h.thoughtId).catch(() => null));
   };
 
   if (error) return <p className="mt-3 text-xs text-danger">{error}</p>;
   if (query.trim().length >= 2 && hits.length === 0)
-    return <p className="mt-3 text-xs text-ink-3">Nothing you've said comes close to that yet.</p>;
+    return <p className="mt-3 text-xs text-ink-3">Nothing about that yet.</p>;
 
-  const weak = hits.length > 0 && hits[0].weak;
   return (
-    <>
-    {weak && (
-      <p className="mt-3 text-xs text-ink-3">No clear match — these are the closest things you've said:</p>
-    )}
-    <ul className={`mt-3 space-y-2 ${compact ? "" : "pb-6"} ${weak ? "opacity-70" : ""}`}>
+    <ul className={`mt-3 space-y-1.5 ${compact ? "" : "pb-6"}`}>
       {hits.map((h) => (
-        <li key={h.thoughtId} className="rounded-xl border border-line bg-surface">
-          <button onClick={() => void toggle(h)} className="block w-full px-3 py-2.5 text-left">
-            <div className="mb-1 flex items-center gap-2 text-[11px] text-ink-3">
-              <span>{fmtDay(h.day)}</span>
-              {h.strong && <span className="rounded-full bg-ok/12 px-1.5 py-px text-ok">strong match</span>}
+        <li key={h.id} className="rounded-xl border border-line bg-surface">
+          <button onClick={() => void toggle(h)} className="block w-full px-3 py-2 text-left">
+            <div className="mb-0.5 flex items-center gap-2">
+              <KindBadge kind={h.kind} />
+              <span className="text-[11px] text-ink-3">{fmtWhen(h.saidAt)}</span>
             </div>
-            <p className={`text-[13px] leading-relaxed text-ink ${compact && open !== h.thoughtId ? "line-clamp-2" : ""}`}>
-              {highlight(h.snippet, h.matched)}
+            <p className={`text-[13px] leading-snug text-ink ${compact && open !== h.id ? "line-clamp-2" : ""}`}>
+              {highlight(h.text, h.matched)}
             </p>
-            {!compact && h.summary && <p className="mt-1 text-xs text-ink-3">{h.summary}</p>}
           </button>
-          {open === h.thoughtId && (
-            <div className="border-t border-line px-3 py-2.5">
-              {full ? (
-                <p className="max-h-56 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-ink-2">
-                  {highlight(full.text, h.matched)}
-                </p>
+          {open === h.id && (
+            <div className="border-t border-line px-3 py-2">
+              {h.thoughtId ? (
+                source ? (
+                  <details className="text-xs text-ink-3">
+                    <summary className="cursor-pointer">What you said</summary>
+                    <LivePartial text={source.text} className="mt-1 max-h-48" />
+                  </details>
+                ) : (
+                  <p className="text-xs text-ink-3">Loading…</p>
+                )
               ) : (
-                <p className="text-xs text-ink-3">Loading…</p>
+                <p className="text-xs text-ink-3">Typed by you.</p>
               )}
-              {onOpen && (
-                <button onClick={() => onOpen(h)} className="mt-2 text-xs font-medium text-accent hover:underline">
+              {onOpen && h.kind !== "task" && (
+                <button onClick={() => onOpen(h)} className="mt-1.5 text-xs font-medium text-accent hover:underline">
                   Show in mind map →
                 </button>
               )}
@@ -168,6 +170,5 @@ export function SearchResults({
         </li>
       ))}
     </ul>
-    </>
   );
 }
