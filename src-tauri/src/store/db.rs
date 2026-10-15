@@ -582,7 +582,7 @@ pub fn insert_thought(conn: &Connection, t: &Thought) -> Result<()> {
     Ok(())
 }
 
-fn thought_from_row(row: &rusqlite::Row) -> SqlResult<Thought> {
+pub fn thought_from_row(row: &rusqlite::Row) -> SqlResult<Thought> {
     Ok(Thought {
         id: row.get(0)?,
         text: row.get(1)?,

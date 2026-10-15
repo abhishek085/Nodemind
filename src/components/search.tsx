@@ -160,7 +160,7 @@ export function SearchResults({
               ) : (
                 <p className="text-xs text-ink-3">Typed by you.</p>
               )}
-              {onOpen && h.kind !== "task" && (
+              {onOpen && (
                 <button onClick={() => onOpen(h)} className="mt-1.5 text-xs font-medium text-accent hover:underline">
                   Show in mind map →
                 </button>

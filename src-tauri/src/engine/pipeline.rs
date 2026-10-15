@@ -143,6 +143,14 @@ pub async fn organize(
             noise: false,
         },
     )?;
+    process(state, mode, said_at, result).await
+}
+
+/// Sort a stored recording and file everything it yields. Shared by new
+/// captures and by `reprocess` (older recordings, after sorting improves).
+async fn process(state: Arc<AppState>, mode: CaptureMode, said_at: String, mut result: CaptureResult) -> Result<CaptureResult> {
+    let thought_id = result.thought_id.clone();
+    let transcript = result.transcript.clone();
 
     // 2) Sort what was said (and, for meetings, write the minutes).
     stage(&state, "organizing");
@@ -218,6 +226,15 @@ pub async fn organize(
         .unwrap_or_default();
     {
         let conn = lock(&state)?;
+        // Tasks are map nodes too (green), so task-heavy speech still shows up.
+        let task_nodes: Vec<ItemRef> = result
+            .tasks
+            .iter()
+            .map(|t| ItemRef { id: t.id.clone(), kind: "task".into(), text: t.title.clone() })
+            .collect();
+        for t in &task_nodes {
+            graph::upsert_item_node(&conn, &t.id, "task", &t.text, &said_at)?;
+        }
         for i in sorted.iter().filter(|i| i.kind != Kind::Task) {
             let item = db::Item {
                 id: Uuid::new_v4().to_string(),
@@ -248,8 +265,8 @@ pub async fn organize(
                 entity_ids.push(id);
             }
         }
-        // Each item is about the recording's topics / people / goals.
-        for item in &result.items {
+        // Each item and task is about the recording's topics / people / goals.
+        for item in result.items.iter().chain(task_nodes.iter()) {
             for e in &entity_ids {
                 graph::upsert_edge(&conn, &item.id, e, "involves")?;
             }
@@ -260,6 +277,7 @@ pub async fn organize(
         } else {
             result.items.iter().map(|i| &i.id).collect()
         };
+        drop(task_nodes);
         for f in &fog_signals {
             if let Some(hub) = graph::upsert_entity(&conn, crate::engine::search::EMBED_MODEL, "fog", &fog::label(&f.tag), "negative", None)? {
                 for t in &fog_targets {
@@ -309,4 +327,62 @@ pub async fn organize(
     result.fog = fog_signals;
     result.minutes = minutes;
     Ok(result)
+}
+
+/// Re-sort recordings made before the current sorting existed (once, at
+/// startup): clears what they produced and files it again.
+pub fn reprocess_old_in_background(state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        const FLAG: &str = "sorted_v2";
+        let todo: Vec<db::Thought> = match state.db.lock() {
+            Ok(conn) => {
+                if db::get_meta(&conn, FLAG).ok().flatten().is_some() {
+                    return;
+                }
+                let mut stmt = match conn.prepare(&format!("SELECT {} FROM thoughts WHERE kind = 'note' ORDER BY created_at", db::THOUGHT_COLS)) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let rows = stmt.query_map([], |r| db::thought_from_row(r)).map(|r| r.flatten().collect()).unwrap_or_default();
+                rows
+            }
+            Err(_) => return,
+        };
+        for t in todo {
+            if let Ok(conn) = state.db.lock() {
+                let items: Vec<String> = db::items_for_thought(&conn, &t.id).unwrap_or_default().into_iter().map(|i| i.id).collect();
+                let tasks: Vec<String> = db::get_tasks(&conn, true).unwrap_or_default().into_iter().filter(|x| x.thought_id.as_deref() == Some(t.id.as_str())).map(|x| x.id).collect();
+                let _ = graph::unrecord_items(&conn, &items);
+                let _ = graph::unrecord_items(&conn, &tasks);
+                let _ = conn.execute("DELETE FROM items WHERE thought_id = ?1", rusqlite::params![t.id]);
+                for id in &tasks {
+                    let _ = db::delete_task(&conn, id);
+                }
+                let _ = conn.execute("UPDATE thoughts SET noise = 0, fog = NULL WHERE id = ?1", rusqlite::params![t.id]);
+            }
+            let result = CaptureResult {
+                thought_id: t.id.clone(),
+                transcript: t.text.clone(),
+                summary: None,
+                tasks: Vec::new(),
+                items: Vec::new(),
+                topics: Vec::new(),
+                people: Vec::new(),
+                fog: Vec::new(),
+                noise: false,
+                duration_secs: t.duration_secs,
+                mode: CaptureMode::Note,
+                minutes: None,
+            };
+            if let Err(e) = process(state.clone(), CaptureMode::Note, t.started_at.clone(), result).await {
+                eprintln!("[reprocess] {} failed: {e}", t.id);
+            }
+        }
+        if let Ok(conn) = state.db.lock() {
+            let _ = db::set_meta(&conn, FLAG, "1");
+        }
+        state.emit("thoughts-updated", &serde_json::json!({}));
+        state.emit("tasks-updated", &serde_json::json!({}));
+        crate::applog::write(&state, "app.log", "re-sorted existing recordings");
+    });
 }

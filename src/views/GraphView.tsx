@@ -49,10 +49,10 @@ const ENTITY: Record<string, { label: string; color: string }> = {
   goal: { label: "Goals", color: "#f59e0b" },
   fog: { label: "Fog", color: "#dc2626" },
 };
-const FILTERS: NodeType[] = ["idea", "learning", "question", "decision", "topic", "person", "fog"];
+const FILTERS: NodeType[] = ["task", "idea", "learning", "question", "decision", "topic", "person", "fog"];
 type Range = "7d" | "30d" | "all";
 
-const isItem = (t: string) => (ITEM_KINDS as string[]).includes(t);
+const isItem = (t: string) => t === "task" || (ITEM_KINDS as string[]).includes(t);
 
 function colorOf(n: NodeView): string {
   if (n.nodeType === "fog") return fogStyle(n.label.toLowerCase()).color;
@@ -492,7 +492,7 @@ function SidePanel({
                 <button
                   onClick={() => byId.has(h.id) && onSelect(h.id)}
                   className={`block w-full rounded-lg px-2 py-1.5 text-left ${byId.has(h.id) ? "hover:bg-surface" : "cursor-default"}`}
-                  title={byId.has(h.id) ? "Show on the map" : "Tasks live on Today"}
+                  title={byId.has(h.id) ? "Show on the map" : "Not on the map"}
                 >
                   <div className="flex items-center gap-1.5">
                     <KindBadge kind={h.kind} />
@@ -772,7 +772,7 @@ function EntityDetail({ node, vis, byId, onSelect }: DetailProps) {
           </div>
         </div>
       )}
-      {(["decision", "question", "idea", "learning"] as const).map((k) => {
+      {(["decision", "question", "idea", "learning", "task"] as const).map((k) => {
         const list = items.filter((i) => i.nodeType === k);
         if (list.length === 0) return null;
         return (

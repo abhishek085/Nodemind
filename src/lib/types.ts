@@ -119,7 +119,7 @@ export interface Task {
 }
 
 /** Mind-map node types: items said (engine/sort.rs), what they're about, fog. */
-export type NodeType = "idea" | "learning" | "question" | "decision" | "topic" | "person" | "goal" | "fog";
+export type NodeType = "task" | "idea" | "learning" | "question" | "decision" | "topic" | "person" | "goal" | "fog";
 
 /** An idea / learning / question / decision kept from a recording. */
 export interface ItemRef {

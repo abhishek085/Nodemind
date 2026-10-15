@@ -73,7 +73,7 @@ fn rules() -> &'static Rules {
                 ))),
                 (Kind::Idea, re(r"\bmaybe (we|i) could\b|\b(we|i) could (try|do|build|make|add|use|start|offer)\b|\bwhat if\b|\bhow about\b|\bsuggested\b|\b(an|one|the) idea\b|\bmight try\b|\bcould try\b|\bit would be (cool|nice|great|good)\b")),
                 (Kind::Learning, re(r"\brealized\b|\bturns out\b|\bi learned\b|\blearned that\b|\bnow i (finally )?(get|understand)\b|\bfinally get it\b|\bi figured out\b|\bthe trick is\b|\bthe reason .+ is\b")),
-                (Kind::Question, re(r"\?$|\b(not sure|don't know|do not know|wondering) (whether|if|how|what|why|when)\b|\bwhy (does|do|is|are|did)\b|\bhow do (i|we)\b|\bshould (i|we)\b.*\bor\b|\bwhether to\b|\bback and forth\b")),
+                (Kind::Question, re(r"\?$|\b(not sure|don't know|do not know|wondering) (whether|if|how|what|why|when)\b|\bi wonder (whether|if|how|what|why|when)\b|\bwhy (does|do|is|are|did)\b|\bhow do (i|we)\b|\bshould (i|we)\b.*\bor\b|\bwhether to\b|\bback and forth\b")),
             ],
             not_imperative: re(r"^(call|text|message|email|check|plan|order|file|draft|test|fix|update|review|read|move) (with|went|was|is|from|about it|today was)\b"),
             filler: re(r"(?i)^(?:(?:okay|ok|so|oh|and|also|anyway|but|well|um+|uh+|plus|then|like|i think|i guess|still|yeah|right|hmm+|random thought)[,]?\s+)+"),

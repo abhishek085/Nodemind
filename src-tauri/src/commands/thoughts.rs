@@ -70,6 +70,7 @@ pub fn update_task(
 pub fn delete_task(state: State<'_, Arc<AppState>>, id: String) -> Result<()> {
     let conn = state.db.lock().map_err(|_| crate::error::Error::Store("db".into()))?;
     db::delete_task(&conn, &id)?;
+    graph::delete_node(&conn, &id)?;
     state.emit("tasks-updated", &serde_json::json!({}));
     Ok(())
 }
