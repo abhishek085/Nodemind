@@ -333,7 +333,7 @@ async fn process(state: Arc<AppState>, mode: CaptureMode, said_at: String, mut r
 /// startup): clears what they produced and files it again.
 pub fn reprocess_old_in_background(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
-        const FLAG: &str = "sorted_v2";
+        const FLAG: &str = "sorted_v3";
         let todo: Vec<db::Thought> = match state.db.lock() {
             Ok(conn) => {
                 if db::get_meta(&conn, FLAG).ok().flatten().is_some() {
@@ -379,6 +379,7 @@ pub fn reprocess_old_in_background(state: Arc<AppState>) {
             }
         }
         if let Ok(conn) = state.db.lock() {
+            let _ = crate::engine::links::prune_junk(&conn); // entities orphaned by the re-sort
             let _ = db::set_meta(&conn, FLAG, "1");
         }
         state.emit("thoughts-updated", &serde_json::json!({}));

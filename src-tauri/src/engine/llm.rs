@@ -247,6 +247,7 @@ pub async fn annotate(text: &str) -> Result<crate::engine::pipeline::Annotation,
                     .filter_map(|x| x.as_str())
                     .map(|s| s.trim().trim_end_matches('.').to_string())
                     .filter(|s| !s.is_empty() && !crate::engine::links::is_junk_entity(kind, s))
+                    .filter(|s| crate::engine::links::is_grounded(kind, s, text))
                     .filter(|s| seen.insert(s.to_lowercase()))
                     .take(5)
                     .collect()

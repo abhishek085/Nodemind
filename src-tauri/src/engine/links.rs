@@ -36,12 +36,33 @@ pub fn is_junk_entity(kind: &str, label: &str) -> bool {
         ],
         "topic" => &[
             "notes", "note", "meeting", "meetings", "thoughts", "thought", "thinking", "tasks", "task", "things",
-            "stuff", "work", "life", "today", "recording", "transcript", "brain-dump", "brain dump",
+            "stuff", "work", "life", "today", "learning", "ideas", "idea", "plans", "plan", "recording", "transcript", "brain-dump", "brain dump",
         ],
         "goal" => &["remind", "a task", "task", "tasks", "take notes", "notes", "do it", "get it done"],
         _ => &[],
     };
     l.len() < 2 || generic.contains(&l.as_str()) || (kind == "goal" && words < 2)
+}
+
+/// An entity only counts if its words are in what was said: a person's name
+/// must appear verbatim; a topic or goal needs one of its words (matched by
+/// a 5-letter stem, so "cancelling" grounds "cancel subscription"). Small
+/// models invent entities — even copying names from prompt examples.
+pub fn is_grounded(kind: &str, label: &str, said: &str) -> bool {
+    let said = said.to_lowercase();
+    let words: Vec<String> = label
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(str::to_string)
+        .collect();
+    if words.is_empty() {
+        return false;
+    }
+    if kind == "person" {
+        return words.iter().all(|w| said.contains(w.as_str()));
+    }
+    words.iter().any(|w| said.contains(&w[..w.len().min(5)]))
 }
 
 /// Link an item to its closest other items. Returns the linked ids.
@@ -73,11 +94,16 @@ pub fn rebuild_similar(conn: &Connection) -> Result<usize> {
     Ok(n)
 }
 
-/// Remove junk entity nodes (and their edges) left by older builds.
+/// Remove junk entity nodes and entities no item points at (invented or
+/// orphaned), with their edges.
 pub fn prune_junk(conn: &Connection) -> Result<usize> {
+    let used: std::collections::HashSet<String> = graph::all_edge_endpoints(conn)?;
     let junk: Vec<String> = graph::get_nodes(conn)?
         .into_iter()
-        .filter(|n| matches!(n.node_type.as_str(), "topic" | "person" | "goal") && is_junk_entity(&n.node_type, &n.label))
+        .filter(|n| {
+            matches!(n.node_type.as_str(), "topic" | "person" | "goal" | "fog")
+                && (is_junk_entity(&n.node_type, &n.label) || !used.contains(&n.id))
+        })
         .map(|n| n.id)
         .collect();
     for id in &junk {
@@ -136,6 +162,17 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invented_entities_are_not_grounded() {
+        let said = "Remind me to pick up laundry and cancel my subscription";
+        assert!(!is_grounded("person", "Priya", said));
+        assert!(!is_grounded("person", "Mom", said));
+        assert!(is_grounded("person", "Priya", "call Priya tomorrow"));
+        assert!(is_grounded("topic", "Laundry", said));
+        assert!(is_grounded("topic", "subscription cancellation", said));
+        assert!(!is_grounded("topic", "meal planning", said));
+    }
 
     #[test]
     fn junk_entities() {

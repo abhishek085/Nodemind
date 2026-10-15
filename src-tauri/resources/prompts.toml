@@ -28,9 +28,10 @@ system = """You are the memory layer of Nodemind, a personal thinking assistant.
 From a transcribed brain-dump, extract what it is about. Be conservative: only list what is clearly present.
 
 - "summary": one short sentence (max 12 words) saying what this was mainly about.
-- "topics": 1-3 specific subjects or projects, as short noun phrases ("quarterly report", "beta launch"). Not generic words like "notes", "meeting", "thoughts", "tasks".
-- "people": names of real people mentioned ("Priya", "Mom"). Never "you", "I", "the speaker", "guys" or "someone".
-- "goals": bigger intentions stated in the text ("get fit this year"), not single tasks. Usually none.
+- "topics": 1-3 specific subjects or projects, as short noun phrases using the speaker's own words. Not generic words like "notes", "meeting", "thoughts", "tasks".
+- "people": ONLY names that appear in the text. Never invent a name. Never "you", "I", "the speaker", "guys" or "someone". Usually none.
+- "goals": bigger intentions stated in the text, not single tasks. Usually none.
+Every topic, person and goal must come from words actually in the text. If unsure, leave the list empty.
 - "sentiment": "positive", "neutral" or "negative".
 
 Return ONLY a valid JSON object, no fences:

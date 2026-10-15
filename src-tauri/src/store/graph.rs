@@ -284,6 +284,15 @@ pub fn get_graph(conn: &Connection, limit: i64) -> Result<GraphData> {
     Ok(GraphData { nodes: out, edges })
 }
 
+/// Ids of every node that has at least one edge.
+pub fn all_edge_endpoints(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn
+        .prepare("SELECT from_node FROM graph_edges UNION SELECT to_node FROM graph_edges")
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(rows.flatten().collect())
+}
+
 /// Remove the item nodes of a recording (and their edges).
 pub fn unrecord_items(conn: &Connection, item_ids: &[String]) -> Result<()> {
     for id in item_ids {
