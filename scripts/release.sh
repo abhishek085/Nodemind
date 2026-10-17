@@ -47,8 +47,8 @@ SIG="$TARBALL.sig"
 STABLE_DMG="$(dirname "$DMG")/${APP_NAME}-macOS.dmg"
 cp "$DMG" "$STABLE_DMG"
 
-echo "▸ signing updater artifact"
-npx tauri signer sign "$TARBALL"
+# `tauri build` already signed the updater tarball (TAURI_SIGNING_PRIVATE_KEY).
+echo "▸ checking updater signature"
 [ -f "$SIG" ] || { echo "signing did not produce $SIG"; exit 1; }
 
 REPO="abhishek085/Nodemind"
