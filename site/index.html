@@ -223,10 +223,13 @@ footer a{color:var(--muted)}
       <div class="two">
         <div class="install" id="install">
           <h2>Install</h2>
+          <p style="margin:0 0 6px;color:#A9B6CF;font-size:15px">Fastest, no warning — paste in Terminal:</p>
+          <pre style="margin:0 0 10px;background:#060B17;border:1px solid #1E2A44;border-radius:10px;padding:12px 14px;font:12.5px/1.6 var(--mono);color:#D8E1F2;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all">curl -fsSL https://raw.githubusercontent.com/abhishek085/Nodemind/main/scripts/install.sh | bash</pre>
+          <p style="margin:0 0 4px;color:#7D8BA6;font-size:13px">Or the usual way:</p>
           <ol class="steps">
             <li><h3>Download</h3><p>Get <b>Nodemind-macOS.dmg</b> from the button above.</p></li>
             <li><h3>Drag to Applications</h3><p>Open the DMG and drag Nodemind into your Applications folder.</p></li>
-            <li><h3>Open it the first time</h3><p>Nodemind isn't notarized by Apple yet, so the first time, <kbd>right-click</kbd> the app → <b>Open</b> → <b>Open</b>. After that it opens normally.</p></li>
+            <li><h3>Allow it the first time</h3><p>Nodemind isn't notarized by Apple yet, so macOS blocks the first open. Double-click it, click <b>Done</b>, then go to <b>System Settings → Privacy &amp; Security</b>, scroll down and click <b>Open Anyway</b>. (Right-click → Open no longer works on recent macOS.)</p></li>
             <li><h3>Let it set up</h3><p>Nodemind downloads its AI models once (1.6 GB), then lives in your menu bar. Approve the microphone the first time you record.</p></li>
           </ol>
         </div>

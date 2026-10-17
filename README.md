@@ -81,11 +81,11 @@ Download the latest **DMG** from [Releases](https://github.com/abhishek085/Nodem
 drag Nodemind into Applications, and launch it. The first launch downloads the
 local AI models once (~1.6 GB); after that Nodemind works with no internet at all.
 
-> **First launch on a Mac that didn't build it** — the app is ad-hoc signed, not
-> Apple-notarized, so Gatekeeper will warn on the very first open of a downloaded
-> copy: right-click the app → **Open** → **Open** again, and approve it once in
-> System Settings → Privacy & Security. Later launches (and in-app updates) are
-> seamless.
+> **Not notarized yet.** macOS blocks an app downloaded in a browser. Either run the
+> installer, which downloads with `curl` and so isn't blocked:
+> `curl -fsSL https://raw.githubusercontent.com/abhishek085/Nodemind/main/scripts/install.sh | bash`
+> or open the app once, click **Done**, then **System Settings → Privacy & Security →
+> Open Anyway**. (Right-click → Open no longer works on recent macOS.)
 
 ### Build from source
 
