@@ -1,0 +1,22 @@
+{
+  "name": "nodemind-launch-video",
+  "private": true,
+  "description": "Nodemind launch film (Remotion, 16:9). Render: npm i && npm run render",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts Launch ../assets/video/nodemind-launch.mp4",
+    "gif": "remotion render src/index.ts Launch ../assets/video/nodemind-launch.gif --codec=gif --every-nth-frame=3 --scale=0.42",
+    "still": "remotion still src/index.ts Launch ../assets/video/poster.png --frame=250"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.534",
+    "@remotion/google-fonts": "4.0.534",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.534"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.8",
+    "typescript": "5.8.3"
+  }
+}

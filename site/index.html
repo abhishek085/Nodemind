@@ -192,6 +192,10 @@ footer a{color:var(--muted)}
       </div>
     </header>
 
+    <section id="film">
+      <video src="nodemind-launch.mp4" poster="poster.png" controls playsinline preload="metadata" style="width:100%;border-radius:14px;border:1px solid var(--line);display:block;background:#000"></video>
+    </section>
+
     <section id="how">
       <h2>How it works</h2>
       <p class="sub">It lives in your menu bar. No typing, no formatting, no account.</p>
@@ -232,6 +236,12 @@ footer a{color:var(--muted)}
             <li><h3>Allow it the first time</h3><p>Nodemind isn't notarized by Apple yet, so macOS blocks the first open. Double-click it, click <b>Done</b>, then go to <b>System Settings → Privacy &amp; Security</b>, scroll down and click <b>Open Anyway</b>. (Right-click → Open no longer works on recent macOS.)</p></li>
             <li><h3>Let it set up</h3><p>Nodemind downloads its AI models once (1.6 GB), then lives in your menu bar. Approve the microphone the first time you record.</p></li>
           </ol>
+          <details style="margin-top:16px;color:#A9B6CF;font-size:15px">
+            <summary style="cursor:pointer;color:#fff;font-weight:600">Why does macOS warn me? Is it safe?</summary>
+            <p style="margin:10px 0">The app isn't signed with an Apple Developer certificate. Apple only drops the warning for apps whose makers pay $99 a year and submit each release for scanning ("notarization"). Nodemind is free and open source and hasn't done that yet. The warning means "Apple hasn't reviewed this", not "this is harmful". <a href="https://github.com/abhishek085/Nodemind/tree/main/src-tauri/src" style="color:#9DB8FF">Every line of code is public</a>, and your voice and notes never leave your Mac.</p>
+            <p style="margin:10px 0">Look for <b>Open Anyway</b> in the <b>Security</b> section of <b>System Settings → Privacy &amp; Security</b>:</p>
+            <img src="privacy-security.png" alt="System Settings, Privacy and Security, Security section" style="width:100%;border-radius:10px;border:1px solid #1E2A44">
+          </details>
         </div>
         <div class="privacy">
           <h2>Private by design</h2>
