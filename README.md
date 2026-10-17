@@ -11,7 +11,7 @@
 <p align="center">
   A voice-first, fully local <strong>personal thinking assistant</strong> for macOS.<br />
   Speak — in English or Hindi — and Nodemind turns the ramble into a clean checklist,
-  a living thought graph, and a friction-free plan for today.
+  a living thought graph, and a clear view of your day.
 </p>
 
 <p align="center">
@@ -38,8 +38,8 @@ Nodemind gives them a place to land:
    and goals, and files them into your mind map.
 3. **🗺️ Map** — everything you've ever said becomes a living graph of thoughts,
    topics, people, and goals, linked by what they relate to.
-4. **📅 Today** — one screen for the day: a sharp "friction" insight, your checklist,
-   focus blocks, and what your Apple Calendar already owns.
+4. **📅 Today** — one screen for the day: your checklist (grouped by the thought it
+   came from), a timeline of today's notes and meetings, and your calendar.
 
 There is no account, no cloud, and no telemetry. Your voice is transcribed on your
 Mac by a local Whisper model; the reasoning runs on a local 1B LLM. Nothing you say
@@ -47,11 +47,15 @@ ever leaves this device.
 
 ## ✨ What you get
 
-- **One-button capture** with a 20-minute session, live "transcribing → organizing" stages
-- **Suggested checklist** — tap to keep the tasks the model heard
-- **Mind map** (React Flow) — thoughts orbit the center; topics, people, and goals ring the outside; search your memory in one keystroke
-- **Direct voice commands** — "remind me to call Sam" or "start a 25-minute focus" are recognized and made actionable
-- **Today view** — friction insight, focus timer with a progress ring, checklist, and calendar sync (read-only, via AppleScript)
+- **Lives in the menu bar** — click the icon to record and review; the full window opens only for the mind map, Today and settings
+- **Hold-to-talk hotkey** — hold <kbd>⌥⇧Space</kbd> anywhere (or tap to start/stop); the result arrives as a notification
+- **Live transcription** — speech is transcribed at each pause while you talk, so the transcript is ready ~0.2 s after you stop
+- **Meeting notes** — records you (mic) and the call (your Mac's audio output) separately, so every line is labelled *You* / *Them*; when you stop, the local model writes minutes — summary, decisions, action items — and yours land on Today. Works with Zoom, Meet, Teams, anything playing on the Mac (macOS 14.2+)
+- **Sorted, not transcribed** — what you say is sorted into tasks, ideas, learnings, questions and decisions; small talk and test chatter are dropped. Tasks go straight to Today (duplicates skipped, undo any)
+- **Search by meaning** — EmbeddingGemma 2 searches those clean statements even in different words ("pricing" → "we decided to price it at nine dollars"), with a boost for exact names, and says "nothing about that yet" instead of guessing; <kbd>⌘K</kbd>
+- **Mind map** — a force-directed map of your thoughts, the topics and people they share, links between similar thoughts (EmbeddingGemma 2), and recurring fog patterns; hover to trace connections, click for details
+- **Direct voice commands** — "remind me to call Sam" becomes a task, even mid-ramble
+- **Today view** — your checklist grouped by the thought it came from (no duplicates), a timeline of today's notes and meetings, and your calendar
 - **Auto-update** — checks GitHub Releases and relaunches into the new build when you approve
 
 ## 🧱 How it's built
@@ -59,11 +63,12 @@ ever leaves this device.
 | Layer | Tech |
 | --- | --- |
 | Shell | [Tauri 2](https://tauri.app) (Rust) + React 19 + Tailwind v4 |
-| Speech→Text | `whisper-cli` (whisper.cpp v1.9.5, Metal, optional CoreML encoder) — bundled sidecar |
-| Reasoning | `llama-server` (llama.cpp b11609, Metal) hosting Llama 3.2 1B Instruct — bundled sidecar |
-| Memory | Local vector store (EmbeddingGemma 2) + SQLite graph store, both in your app-data folder |
-| Calendar | Read-only Apple Calendar via `osascript` (graceful when permission is denied) |
-| Distribution | DMG with all models bundled · signed updater via GitHub Releases |
+| Speech→Text | `whisper-server` (whisper.cpp v1.9.5, Metal) kept loaded for live, per-pause transcription; `whisper-cli` fallback — bundled sidecars |
+| Reasoning | `llama-server` (llama.cpp b11609, Metal) hosting Qwen3.5 0.8B (Q4_K_M) — bundled sidecar |
+| Memory & search | EmbeddingGemma 2 vectors per idea / question / decision / task (semantic search + similar-item links) + SQLite graph store, all in your app-data folder |
+| Calendar | Read-only via EventKit (all accounts, instant), AppleScript fallback |
+| macOS bridge | `nodemind-helper` (Swift) — EventKit calendar + Core Audio system-audio tap for meeting mode |
+| Distribution | Small DMG; models (~1.6 GB) download once on first launch · signed updater via GitHub Releases |
 
 The two model servers run on loopback (127.0.0.1) only, are spawned by the app, and
 are killed when the app exits.
@@ -73,8 +78,8 @@ are killed when the app exits.
 ### Run a prebuilt app
 
 Download the latest **DMG** from [Releases](https://github.com/abhishek085/Nodemind/releases),
-drag Nodemind into Applications, and launch it. The first launch starts the local
-engine (a few seconds) — everything is bundled, so it works with no internet at all.
+drag Nodemind into Applications, and launch it. The first launch downloads the
+local AI models once (~1.6 GB); after that Nodemind works with no internet at all.
 
 > **First launch on a Mac that didn't build it** — the app is ad-hoc signed, not
 > Apple-notarized, so Gatekeeper will warn on the very first open of a downloaded
@@ -90,13 +95,11 @@ Requirements: macOS (Apple Silicon), Xcode CLT, Rust, Node 18+, cmake.
 # 1. front-end deps
 npm install
 
-# 2. fetch the models into src-tauri/resources/models/  (~1.8 GB, one-time)
-./scripts/fetch-models.sh
-
-# 3. build the whisper.cpp + llama.cpp sidecar binaries
+# 2. build the whisper.cpp + llama.cpp sidecar binaries
 ./scripts/build-sidecars.sh
 
-# 4. build the app (produces src-tauri/target/release/bundle/dmg/Nodemind_*.dmg)
+# 3. build the app (produces src-tauri/target/release/bundle/dmg/Nodemind_*.dmg)
+#    The models download on first launch, as for users.
 export TAURI_SIGNING_PRIVATE_KEY="$PWD/src-tauri/nodemind.key"   # generate: npx tauri signer generate
 npx tauri build
 ```
@@ -112,7 +115,7 @@ sidecars and models.
 ## 🔒 Privacy, stated plainly
 
 - Audio is buffered in-process, transcribed locally, and discarded after each capture.
-- The SQLite database (thoughts, tasks, graph, vectors, focus sessions) lives in
+- The SQLite database (thoughts, meetings, tasks, graph, vectors) lives in
   `~/Library/Application Support/com.nokast.nodemind/` — open the folder from Settings.
 - The only network calls the app can make are: the one-time model download on first
   launch, and the opt-in update check. No analytics, no remote STT, no remote LLM.
@@ -132,7 +135,6 @@ sidecars and models.
 │   ├── calendar/           # read-only Apple Calendar bridge
 │   └── lib.rs              # window, tray, menu, exit wiring
 ├── scripts/
-│   ├── fetch-models.sh     # pinned model downloads (resume + sha256 verify)
 │   └── build-sidecars.sh   # whisper.cpp v1.9.5 + llama.cpp b11609 (Metal, static)
 └── src-tauri/resources/    # prompts.toml + bundled models
 ```

@@ -21,7 +21,6 @@ export interface EngineStatus {
   arch: string;
   chatRunning: boolean;
   embedRunning: boolean;
-  coreml: boolean;
   models: ModelStatusView[];
   error: string | null;
 }
@@ -34,28 +33,53 @@ export interface ModelProgress {
 
 // ── Capture ─────────────────────────────────────────────────────────────────
 
-export interface CaptureSession {
-  language: string;
-  maxSeconds: number;
-  startedAt: number;
+/** "note" = brain-dump (mic); "meeting" = mic ("You") + call audio ("Them"). */
+export type CaptureMode = "note" | "meeting";
+
+export interface CaptureStatus {
+  recording: boolean;
+  mode: CaptureMode | null;
+  elapsedSecs: number;
+  partial: string;
 }
 
-export interface CommandIntent {
-  intent: "create_task" | "start_focus" | "unknown";
-  title: string | null;
-  minutes: number | null;
+/** A task a capture added to Today (undo = delete it). */
+export interface TaskRef {
+  id: string;
+  title: string;
 }
 
 export interface CaptureResult {
   thoughtId: string;
   transcript: string;
   summary: string | null;
-  tasks: string[];
+  /** Tasks, already added to Today. */
+  tasks: TaskRef[];
+  /** Ideas, learnings, questions, decisions. */
+  items: ItemRef[];
   topics: string[];
   people: string[];
-  related: string[];
-  command: CommandIntent | null;
+  /** Nothing worth keeping was said (small talk, a test). */
+  noise: boolean;
   durationSecs: number;
+  mode: CaptureMode;
+  /** Meeting mode only. */
+  minutes?: MeetingMinutes;
+  /** Where the thinking seemed stuck; empty for clear speech. */
+  fog: FogSignal[];
+}
+
+export interface ActionItem {
+  owner: string; // "You", "Them", or a name
+  task: string;
+  due: string;
+}
+
+export interface MeetingMinutes {
+  title: string;
+  summary: string;
+  decisions: string[];
+  actionItems: ActionItem[];
 }
 
 export type CaptureStage = "transcribing" | "organizing" | "done";
@@ -71,6 +95,18 @@ export interface Thought {
   startedAt: string; // RFC3339
   durationSecs: number;
   createdAt: string;
+  kind: "note" | "meeting";
+  /** JSON of MeetingMinutes (meetings only). */
+  minutes: string | null;
+  /** JSON of FogSignal[] (when any were found). */
+  fog: string | null;
+}
+
+/** Where the thinking seemed stuck (engine/fog.rs). */
+export interface FogSignal {
+  tag: "overthinking" | "unclarity" | "abstraction" | "overwhelmed" | string;
+  context: string;
+  question: string;
 }
 
 export interface Task {
@@ -82,13 +118,20 @@ export interface Task {
   createdAt: string;
 }
 
-export type NodeType =
-  | "thought"
-  | "topic"
-  | "person"
-  | "goal"
-  | "task"
-  | "fog";
+/** Mind-map node types: items said (engine/sort.rs), what they're about, fog. */
+export type NodeType = "task" | "idea" | "learning" | "question" | "decision" | "topic" | "person" | "goal" | "fog";
+
+/** An idea / learning / question / decision kept from a recording. */
+export interface ItemRef {
+  id: string;
+  kind: "idea" | "learning" | "question" | "decision";
+  text: string;
+}
+
+export interface Item extends ItemRef {
+  thoughtId: string;
+  createdAt: string;
+}
 
 export interface GraphEdge {
   id: string;
@@ -104,10 +147,11 @@ export interface NodeView {
   label: string;
   mentions: number;
   sentiment: string; // positive | neutral | negative
-  excerpt: string | null;
-  summary: string | null;
+  /** RFC 3339; for items, when it was said. */
   lastSeen: string | null;
   degree: number;
+  /** For items: the recording it came from. */
+  thoughtId: string | null;
 }
 
 export interface GraphData {
@@ -115,11 +159,18 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
-export interface ThoughtHit {
-  thought: Thought;
+/** A statement you made that matches a search (engine/search.rs). */
+export interface SearchHit {
+  /** Item or task id; item ids are also mind-map node ids. */
+  id: string;
+  kind: "task" | "idea" | "learning" | "question" | "decision";
+  text: string;
+  thoughtId: string | null;
+  saidAt: string;
   score: number;
+  /** Query words found verbatim, for highlighting. */
+  matched: string[];
 }
-
 // ── Calendar / today / focus ────────────────────────────────────────────────
 
 export interface CalendarEvent {
@@ -138,29 +189,35 @@ export interface CalendarSync {
   permissionHint: string | null;
 }
 
-export interface TodayBrief {
-  friction: string | null;
-  suggestion: string | null;
-  openTasks: number;
-  thoughtsToday: number;
-  eventsToday: number;
-  scheduledHours: number;
-  focusMinutes: number;
-}
-
-export interface FocusSession {
-  id: string;
-  title: string | null;
+/** The Today screen in one payload (see commands/thoughts.rs `get_today`). */
+export interface Today {
   day: string;
-  startedAt: string;
-  endedAt: string | null;
-  minutes: number;
+  tasks: TodayTask[];
+  /** Today's recordings that kept something. */
+  thoughts: TodayThought[];
+  /** Recordings today with nothing worth keeping. */
+  noiseCount: number;
 }
 
-export interface FocusStarted {
+export interface TodayTask {
   id: string;
+  title: string;
+  createdAt: string;
+  /** The capture it came from; typed tasks have none. */
+  source: { thoughtId: string; kind: "note" | "meeting"; title: string; startedAt: string } | null;
+}
+
+export interface TodayThought {
+  id: string;
+  kind: "note" | "meeting";
   startedAt: string;
-  minutes: number;
+  durationSecs: number;
+  title: string;
+  text: string;
+  minutes: MeetingMinutes | null;
+  fog: FogSignal[] | null;
+  items: Item[];
+  taskCount: number;
 }
 
 // ── Settings / updates ──────────────────────────────────────────────────────

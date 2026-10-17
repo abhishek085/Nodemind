@@ -16,10 +16,6 @@ src-tauri/gen/schemas
 
 # Rust/Cargo
 **/*.dSYM/
-src-tauri/resources/models/**/*.bin
-src-tauri/resources/models/**/*.mlmodelc/weights/*
-src-tauri/resources/models/**/*.mlmodelc/analytics/*
-src-tauri/resources/models/**/*.mlmodelc/coremldata.bin
 
 # Editor directories and files
 .vscode/*
@@ -41,7 +37,5 @@ src-tauri/resources/models/**/*.mlmodelc/coremldata.bin
 # NodeMind local-AI assets (built/fetched by scripts/, never committed)
 .sidecar-builds/
 src-tauri/binaries/*
-src-tauri/resources/models/*.gguf
-src-tauri/resources/models/*.bin
 # updater signing key (keep secret) — public key lives in tauri.conf.json
 src-tauri/nodemind.key

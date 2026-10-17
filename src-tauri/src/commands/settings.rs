@@ -68,6 +68,23 @@ fn lock_db<'s>(s: &'s Arc<AppState>) -> Result<std::sync::MutexGuard<'s, rusqlit
     s.db.lock().map_err(|_| crate::error::Error::Store("db".into()))
 }
 
+/// A webview reports an error (render crash, unhandled rejection).
+#[tauri::command]
+pub fn log_ui_error(state: State<'_, Arc<AppState>>, message: String) {
+    let message: String = message.chars().take(4_000).collect();
+    crate::applog::write(&state, "ui.log", &message);
+}
+
+/// The capture language the user picked ("en" | "hi"), defaulting to English.
+pub fn current_language(state: &AppState) -> String {
+    state
+        .db
+        .lock()
+        .ok()
+        .and_then(|conn| db::get_meta(&conn, "language").ok().flatten())
+        .unwrap_or_else(|| "en".to_string())
+}
+
 #[tauri::command]
 pub fn set_language(state: State<'_, Arc<AppState>>, language: String) -> Result<()> {
     let language = if language == "hi" { "hi" } else { "en" }.to_string();
@@ -93,69 +110,51 @@ pub fn open_data_dir(state: State<'_, Arc<AppState>>) -> Result<()> {
 /// personal-scale database take microseconds — no blocking thread needed.
 #[tauri::command]
 pub async fn reindex_embeddings(state: State<'_, Arc<AppState>>) -> Result<u32> {
-    use crate::store::vec_;
-
     let state = state.inner().clone();
+    let model = crate::engine::search::EMBED_MODEL;
 
-    // 1) Collect all re-embeddable texts (thoughts + entity labels).
-    let mut items: Vec<(String, String, String)> = Vec::new(); // kind, ref_id, text
-    {
+    // Drop every vector, then re-embed what search and the map use: items and
+    // tasks (document prefix), and topic / person / goal labels (plain).
+    let (statements, labels) = {
         let conn = lock_db(&state)?;
-        let mut stmt = conn
-            .prepare("SELECT id, text FROM thoughts ORDER BY created_at")
+        conn.execute("DELETE FROM embeddings WHERE model = ?1", rusqlite::params![model])
             .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-        for row in rows.flatten() {
-            let text: String = row.1.chars().take(8_000).collect();
-            items.push(("thought".into(), row.0, text));
-        }
-        for kind in ["topic", "person", "goal"] {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT id, label FROM graph_nodes WHERE node_type = '{kind}'"
-                ))
-                .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+        let mut statements: Vec<(String, String, String)> = Vec::new();
+        for (kind, sql) in [("item", "SELECT id, text FROM items"), ("task", "SELECT id, title FROM tasks")] {
+            let mut stmt = conn.prepare(sql).map_err(|e| crate::error::Error::Store(e.to_string()))?;
             let rows = stmt
-                .query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-            for row in rows.flatten() {
-                items.push((kind.to_string(), row.0, row.1.clone()));
-            }
+            statements.extend(rows.flatten().map(|(id, t)| (kind.to_string(), id, t)));
         }
+        let mut stmt = conn
+            .prepare("SELECT node_type, id, label FROM graph_nodes WHERE node_type IN ('topic', 'person', 'goal')")
+            .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+        let labels: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| crate::error::Error::Store(e.to_string()))?
+            .flatten()
+            .collect();
+        (statements, labels)
+    };
 
-        let model = "embeddinggemma-2";
-        conn.execute(
-            "DELETE FROM embeddings WHERE model = ?1",
-            rusqlite::params![model],
-        )
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    }
-
-    // 2) Batch-embed in chunks of 16.
-    let model = "embeddinggemma-2";
     let mut written = 0u32;
-    for chunk in items.chunks(16) {
+    for chunk in statements.chunks(16) {
+        if crate::engine::search::index(&state, chunk).await.is_ok() {
+            written += chunk.len() as u32;
+        }
+    }
+    for chunk in labels.chunks(16) {
         let texts: Vec<String> = chunk.iter().map(|c| c.2.clone()).collect();
-        let vecs = match crate::engine::llm::embed(&texts).await {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[reindex] embed batch failed: {e} — continuing");
-                continue;
-            }
-        };
-        let conn = lock_db(&state)?;
-        for (i, (kind, ref_id, _)) in chunk.iter().enumerate() {
-            if let Some(v) = vecs.get(i) {
-                let _ = vec_::insert(&conn, kind, ref_id, model, v);
+        if let Ok(vecs) = crate::engine::llm::embed(&texts).await {
+            let conn = lock_db(&state)?;
+            for ((kind, id, _), v) in chunk.iter().zip(vecs.iter()) {
+                let _ = crate::store::vec_::insert(&conn, kind, id, model, v);
                 written += 1;
             }
         }
-        eprintln!("[reindex] {}/{} vectors", written, items.len());
     }
+    crate::engine::links::refresh_in_background(state);
     Ok(written)
 }
 

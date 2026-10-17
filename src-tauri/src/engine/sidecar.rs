@@ -1,13 +1,15 @@
 //! Sidecar process management.
 //!
-//! Two `llama-server` instances run on loopback:
-//!   - port 8642 — the chat model (Llama 3.2 1B) for cleanup/annotation
-//!   - port 8643 — the embedding model (EmbeddingGemma 2) for the vector store
+//! Three servers run on loopback:
+//!   - port 8642 — `llama-server`, the chat model (Qwen3.5 0.8B) for cleanup/annotation/minutes
+//!   - port 8643 — `llama-server`, the embedding model (EmbeddingGemma 2) for the vector store
+//!   - port 8644 — `whisper-server`, speech → text with the model kept loaded,
+//!     so each live utterance transcribes in ~0.2 s instead of reloading
 //!
-//! `whisper-cli` is *not* a resident server — it is spawned per transcription.
+//! `whisper-cli` remains as a fallback when the server binary is absent.
 //! Sidecars are killed automatically on app exit (see `engine::shutdown`).
 
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +18,7 @@ use crate::state::AppState;
 
 pub const CHAT_PORT: u16 = 8642;
 pub const EMBED_PORT: u16 = 8643;
+pub const WHISPER_PORT: u16 = 8644;
 const HOST: &str = "127.0.0.1";
 
 /// Open (or create) an append-mode log file in the app-data `logs` dir.
@@ -36,6 +39,24 @@ fn sidecar_bin(state: &AppState, name: &str) -> Option<std::path::PathBuf> {
     } else {
         None
     }
+}
+
+/// Make `child` die when this app does, however the app ends (quit, crash,
+/// SIGTERM, `kill -9`): a tiny detached shell polls our pid and kills the
+/// child once we're gone. Without it, killed apps left ~1.5 GB of servers
+/// running with no owner.
+fn bind_lifetime(child: &std::process::Child) {
+    let script = format!(
+        "while kill -0 {parent} 2>/dev/null; do sleep 2; done; kill {child} 2>/dev/null",
+        parent = std::process::id(),
+        child = child.id()
+    );
+    let _ = Command::new("/bin/sh")
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn is_port_alive(port: u16) -> bool {
@@ -83,7 +104,8 @@ pub async fn ensure_embed_server(state: &Arc<AppState>) -> bool {
     cmd.arg("-m")
         .arg(&model)
         .args(["--host", HOST, "--port", &EMBED_PORT.to_string()])
-        .args(["-ngl", "99", "--ctx-size", "8192", "--no-webui"])
+        // Without --embeddings the server answers /v1/embeddings with 501.
+        .args(["-ngl", "99", "--ctx-size", "8192", "--no-webui", "--embeddings"])
         .env("GGML_LOG_LEVEL", "0") // silence ggml chatter
         .stdin(Stdio::null())
         .stdout(Stdio::null());
@@ -101,6 +123,7 @@ pub async fn ensure_embed_server(state: &Arc<AppState>) -> bool {
         }
     };
 
+    bind_lifetime(&child);
     state.embed_server.lock().unwrap().replace(child);
     let healthy = wait_healthy(EMBED_PORT, Duration::from_secs(180)).await;
     state.embed_running.store(healthy, std::sync::atomic::Ordering::SeqCst);
@@ -128,7 +151,9 @@ pub async fn ensure_chat_server(state: &Arc<AppState>) -> bool {
     cmd.arg("-m")
         .arg(&model)
         .args(["--host", HOST, "--port", &CHAT_PORT.to_string()])
-        .args(["-ngl", "99", "--ctx-size", "8192", "--no-webui"])
+        // --jinja: use the model's own chat template (Qwen needs it to honour
+        // `enable_thinking: false`, see llm::chat).
+        .args(["-ngl", "99", "--ctx-size", "8192", "--no-webui", "--jinja"])
         .env("GGML_LOG_LEVEL", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
@@ -146,6 +171,7 @@ pub async fn ensure_chat_server(state: &Arc<AppState>) -> bool {
         }
     };
 
+    bind_lifetime(&child);
     state.chat_server.lock().unwrap().replace(child);
     let healthy = wait_healthy(CHAT_PORT, Duration::from_secs(240)).await;
     state.chat_running.store(healthy, std::sync::atomic::Ordering::SeqCst);
@@ -153,9 +179,58 @@ pub async fn ensure_chat_server(state: &Arc<AppState>) -> bool {
     healthy
 }
 
+/// Make sure the whisper server is up. Returns true when healthy.
+///
+/// Optional: when it is missing or fails, transcription falls back to
+/// spawning `whisper-cli` per utterance (slower, still correct).
+pub async fn ensure_whisper_server(state: &Arc<AppState>) -> bool {
+    if is_port_alive(WHISPER_PORT) {
+        state.whisper_running.store(true, std::sync::atomic::Ordering::SeqCst);
+        return true;
+    }
+    let Some(model) = state.resolve_model(ModelKey::Whisper) else {
+        return false;
+    };
+    let Some(bin) = sidecar_bin(state, "whisper-server") else {
+        eprintln!("[sidecar] whisper-server missing — using whisper-cli per utterance");
+        return false;
+    };
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
+
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.arg("-m")
+        .arg(&model)
+        .args(["--host", HOST, "--port", &WHISPER_PORT.to_string()])
+        .args(["-t", &threads.to_string(), "-l", "en"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    if let Some(file) = log_file(state, "whisper-server.log") {
+        cmd.stderr(Stdio::from(file));
+    } else {
+        cmd.stderr(Stdio::null());
+    }
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[sidecar] whisper spawn failed: {e}");
+            return false;
+        }
+    };
+    bind_lifetime(&child);
+    state.whisper_server.lock().unwrap().replace(child);
+    let healthy = wait_healthy(WHISPER_PORT, Duration::from_secs(60)).await;
+    state.whisper_running.store(healthy, std::sync::atomic::Ordering::SeqCst);
+    eprintln!("[sidecar] whisper server {} (port {WHISPER_PORT})", if healthy { "up" } else { "DOWN" });
+    healthy
+}
+
 /// Kill every sidecar we own. Called on exit.
 pub fn kill_all(state: &AppState) {
-    for slot in [state.chat_server.lock().unwrap().take(), state.embed_server.lock().unwrap().take()] {
+    for slot in [
+        state.chat_server.lock().unwrap().take(),
+        state.embed_server.lock().unwrap().take(),
+        state.whisper_server.lock().unwrap().take(),
+    ] {
         if let Some(mut c) = slot {
             let _ = c.kill();
             let _ = c.wait();
@@ -163,13 +238,14 @@ pub fn kill_all(state: &AppState) {
     }
     // Ports may be held by processes we didn't spawn (a previous crashed run
     // whose child outlived us). Best-effort cleanup.
-    for port in [CHAT_PORT, EMBED_PORT] {
+    for (bin, port) in [("llama-server", CHAT_PORT), ("llama-server", EMBED_PORT), ("whisper-server", WHISPER_PORT)] {
         if is_port_alive(port) {
             let _ = std::process::Command::new("pkill")
-                .args(["-f", &format!("llama-server .*--port {port}")])
+                .args(["-f", &format!("{bin} .*--port {port}")])
                 .output();
         }
     }
     state.chat_running.store(false, std::sync::atomic::Ordering::SeqCst);
     state.embed_running.store(false, std::sync::atomic::Ordering::SeqCst);
+    state.whisper_running.store(false, std::sync::atomic::Ordering::SeqCst);
 }

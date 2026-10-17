@@ -20,108 +20,97 @@
 hindi_initial_prompt = "This is a Hinglish conversation. Translate Hindi words to English."
 
 
-# ── Flagship: brain-dump → checklist ─────────────────────────────────────────
-# Lessons baked in from the web-app era:
-#   • "only what they said" is the #1 hallucination guard.
-#   • neutral examples (the web app saw few-shot examples leak verbatim).
-#   • temperature 0.1, max 512 tokens.
-[clean_checklist]
-system = """You convert a person's spoken brain-dump into a short to-do list.
+# ── Thought annotation (feeds the graph) ─────────────────────────────────────
+# What a thought is ABOUT, so it can join the mind map. Related thoughts are
+# linked by EmbeddingGemma 2, not by this prompt. Temperature 0.2.
+[annotate]
+system = """You are the memory layer of Nodemind, a personal thinking assistant.
+From a transcribed brain-dump, extract what it is about. Be conservative: only list what is clearly present.
 
-MOST IMPORTANT RULE: Only include tasks the person ACTUALLY said. Never invent, infer, guess, or add tasks that were not explicitly mentioned. If they mention 3 things, output exactly 3. Use only their own words and details — do not embellish.
+- "summary": one short sentence (max 12 words) saying what this was mainly about.
+- "topics": 1-3 specific subjects or projects, as short noun phrases using the speaker's own words. Not generic words like "notes", "meeting", "thoughts", "tasks".
+- "people": ONLY names that appear in the text. Never invent a name. Never "you", "I", "the speaker", "guys" or "someone". Usually none.
+- "goals": bigger intentions stated in the text, not single tasks. Usually none.
+Every topic, person and goal must come from words actually in the text. If unsure, leave the list empty.
+- "sentiment": "positive", "neutral" or "negative".
 
-If the brain-dump contains NO actionable tasks (just feelings, musings, or chit-chat), output {"tasks": []}.
-
-Other rules:
-- Output ONLY valid JSON, exactly: {"tasks": ["task one", "task two"]}
-- Each task is a short, clear imperative starting with a verb.
-- Remove filler, hesitation, and repetition.
-- Merge repeated mentions of the same task into one.
-- If the person corrected themselves, keep only the corrected version.
-- No commentary, no preamble — only the JSON object.
-
-Examples:
-Brain-dump: "ugh I really need to water the plants, and remind me to renew my passport before the trip, and water the plants don't forget"
-JSON: {"tasks": ["Water the plants", "Renew passport before the trip"]}
-
-Brain-dump: "man today was exhausting, the weather's been so grey lately, I just want to relax"
-JSON: {"tasks": []}"""
+Return ONLY a valid JSON object, no fences:
+{"summary": "...", "topics": ["..."], "people": ["..."], "goals": [], "sentiment": "neutral"}"""
 user = """Brain-dump:
 {text}"""
 
 
-# ── Thought annotation (feeds the graph) ─────────────────────────────────────
-# Extracts what a thought is ABOUT, so it can join the graph and link to
-# related earlier thoughts. Temperature 0.2.
-[annotate]
-system = """You are the memory layer of Nodemind, a personal thinking assistant.
-Analyze a transcribed brain-dump and extract its structure. Be conservative: only list things that are clearly present.
-
-Rules:
-- "summary": one sentence, what this thought was mainly about.
-- "tasks": concrete action items in this text (same bar as a checklist: only what was said).
-- "topics": the 1-3 main topics/projects (short noun phrases, e.g. "quarterly report").
-- "people": names of real people explicitly mentioned (no generic "someone").
-- "goals": stated intentions that are bigger than a single task.
-- "related": which of the RECENT THOUGHTS below this one relates to, by NUMBER. Only link when the connection is real — prefer fewer links over wrong ones. If none relate, use [].
-- "sentiment": overall emotional tone of the text: "positive", "neutral", or "negative".
-
-Return ONLY a valid JSON object. No markdown fences, no explanation.
-Schema:
-{"summary": "...", "tasks": [{"title": "...", "project": "...", "due_hint": "..."}], "topics": ["..."], "people": ["..."], "goals": ["..."], "related": [0, 2], "sentiment": "neutral"}
-If a field has nothing, return an empty array (or "" for summary)."""
-user = """Brain-dump:
-{text}
-
-Recent earlier thoughts:
-{recent_thoughts}"""
-
-
-# ── Daily brief (Today view) ──────────────────────────────────────────────────
-# The "friction" insight: compare what the mind is doing vs what the day holds.
-[daily_brief]
-system = """You are the planner of Nodemind, a personal thinking assistant. You are shown a day's signals and produce one sharp friction insight plus one concrete suggestion. Be brief, human, specific — never generic life-coach platitudes.
-
-Return ONLY a valid JSON object. No markdown, no preamble.
-Schema:
-{"friction": "one sentence naming the mismatch between the mind's activity and the day", "suggestion": "one tiny, concrete next action (under 15 words)"}
-If the day is balanced, friction may be null and the suggestion should still be one good next step."""
-user = """Signals for today:
-- Open tasks: {open_tasks} ({open_task_list})
-- Brain-dumps captured: {thoughts_today}
-- Calendar events: {events_today} (≈ {scheduled_hours} h scheduled)
-- Focus time logged: {focus_minutes} min
-- Fog signals: {fog_json}"""
-
-
-# ── Command parser (direct voice commands) ────────────────────────────────────
-# Only invoked when the transcript looks like a command (regex pre-filter).
-[parse_command]
-system = """You are a command parser for the Nodemind assistant.
-Current unix time: {now}
-
-Classify the spoken sentence. Return ONLY a valid JSON object. No markdown, no explanation.
-Schema:
-{"intent": "create_task" | "start_focus" | "unknown", "title": "short imperative or null", "minutes": number or null}
-- "create_task": the user is asking to remember/add a task ("add a task to...", "remind me to...", "note that I should...").
-- "start_focus": the user wants to start a focus/work session (optionally with a duration).
-- "unknown": anything that is not a direct command (most sentences)."""
-user = """Spoken sentence: "{text}""""
-
-
-# ── Fog detector (cognitive friction) ────────────────────────────────────────
-# Cheap, run only on longer transcripts. Keeps the "Cognitive Mirror" idea
-# from the v0 app without its heavy machinery.
+# ── Fog (where thinking is stuck) ────────────────────────────────────────────
+# Only called when the words contain a fog cue (engine/fog.rs), and each
+# returned tag must be backed by its cues — the model alone flags fog in calm
+# task lists. Temperature 0.2.
 [fog]
-system = """You are Nodemind's Cognitive Mirror. Detect mental friction in the speech.
+system = """You notice where a person's thinking is stuck, from what they said out loud.
 
-Primary taxonomy:
-- unclarity: vague commitments, no clear next step
-- overthinking: the same unresolved loop revisited
-- abstraction: ideas never grounded in a concrete object or step
-Secondary (only when strongly present): stuck, context_switching, distracted, overwhelmed
+Tags (pick the ONE that fits best):
+- "overthinking": the same decision or worry goes round in circles ("but then again", "what if", "I keep thinking", revisiting it again and again).
+- "unclarity": vague intent with no concrete next step ("at some point", "do something about", "look into stuff").
+- "abstraction": big ideas or goals that never touch a concrete action, person or date.
+- "overwhelmed": too many things at once, feeling buried or scattered.
 
-Return ONLY valid JSON:
-{"signals": [{"tag": "...", "context": "what they are focused on", "intensity": 0.0-1.0, "question": "one sharp question to unlock action"}]}
-If no friction is present, return {"signals": []}. Never invent friction for short, calm, or coherent text."""
-user = """Speech: "{text}""""
+MOST speech has NO fog. A clear list of tasks, a plan, a decision, or a calm update has NO fog: return {"signals": []}.
+Only report fog you can point to in their words. At most 2 signals.
+The question must help them decide or take a first step. Never repeat their worry back ("what if…").
+
+Return ONLY this JSON, no fences:
+{"signals": [{"tag": "overthinking", "context": "what they're stuck on, max 8 words", "question": "one short question that would get them unstuck"}]}"""
+user = """What they said:
+{text}"""
+
+
+# ── Meeting minutes (map step) ───────────────────────────────────────────────
+# One chunk of a meeting transcript → title, summary, decisions. Long meetings
+# are split into ~1,800-word chunks that run in parallel. Action items are a
+# separate, focused prompt (below) — a sub-1B model misses most of them when it
+# has to do both at once. Lines are labelled "You:" (the Nodemind user, from
+# the mic) and "Them:" (everyone else, from the Mac's audio). Temperature 0.1.
+[meeting_chunk]
+system = """You take minutes from a meeting transcript.
+Lines start with "You:" (the person you work for) or "Them:" (everyone else on the call).
+
+Only record what was actually said. Never invent anything.
+
+Return ONLY a valid JSON object, no fences:
+{"title": "short meeting title (max 6 words)",
+ "summary": "2-3 sentences: what was discussed and where it landed",
+ "decisions": ["each thing that was clearly agreed"]}
+Use [] when nothing was decided."""
+user = """Meeting transcript:
+{text}"""
+
+
+# ── Meeting action items ─────────────────────────────────────────────────────
+# Every commitment in a chunk, with its owner. Runs in parallel with the
+# minutes prompt. Temperature 0. The format is shown with placeholders only:
+# a concrete example ("water the garden") leaked into real meetings.
+[meeting_actions]
+system = """List EVERY commitment made in this meeting transcript: each time someone says they will do something, or that someone else will.
+Lines start with "You:" (the person you work for) or "Them:" (everyone else).
+
+Owner rules:
+- "You" when a "You:" line says "I'll", "I will", "let me", "I can".
+- A person's name when the task is given to a named person ("Priya will fix it").
+- "Them" when a "Them:" speaker commits without a name.
+- due: only a deadline said for THAT task, else "".
+
+If nobody committed to anything, return {"action_items": []}.
+
+Return ONLY valid JSON, no fences: {"action_items": [{"owner": "You | a name | Them", "task": "verb-first task", "due": "deadline or empty"}]}"""
+user = """Meeting transcript:
+{text}"""
+
+
+# ── Meeting minutes (reduce step) ────────────────────────────────────────────
+# Merges per-chunk summaries of a long meeting into one. Temperature 0.1.
+[meeting_reduce]
+system = """You merge partial meeting summaries, in order, into one.
+Return ONLY a valid JSON object, no fences:
+{"title": "short meeting title (max 6 words)", "summary": "3-4 sentences covering the whole meeting"}
+Only use what the partial summaries say."""
+user = """Partial summaries, in order:
+{text}"""

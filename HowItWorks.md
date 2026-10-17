@@ -11,13 +11,13 @@ Nodemind turns a spoken brain-dump into a clean checklist — and it does the wh
 🗣️  Speech → text      Whisper runs locally (whisper.cpp, Metal)
    │
    ▼
-🧠 Ramble → structure  A small local LLM (Llama 3.2 1B, Metal) cleans the
+🧠 Ramble → structure  A small local LLM (Qwen3.5 0.8B, Metal) cleans the
                        transcript, extracts tasks / topics / people / goals,
                        and links them into your thought graph
    │
    ▼
 🗂️  Filed locally       SQLite in your app-data folder: thoughts, tasks,
-                       graph, vectors, focus — one file you can inspect
+                       graph, vectors — one file you can inspect
 ```
 
 ## Step by step
@@ -31,7 +31,7 @@ Nodemind turns a spoken brain-dump into a clean checklist — and it does the wh
 ## Where it all lives
 
 - **Engine** — `whisper-cli` and two loopback `llama-server` instances, spawned by the app and killed when it quits.
-- **Models** — bundled with the app (Whisper small, Llama 3.2 1B, EmbeddingGemma 2), also resolvable from your app-data folder, where a first-launch download can place updated copies.
+- **Models** — Whisper small, Qwen3.5 0.8B and EmbeddingGemma 2, downloaded once on first launch into your app-data folder (pinned, checksum-verified).
 - **Your data** — `~/Library/Application Support/com.nokast.nodemind/nodemind.db` (openable from Settings).
 
 ## Why it stays private

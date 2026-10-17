@@ -1,8 +1,8 @@
-// Icon rail on the left edge — the whole app is four destinations.
+// Icon rail on the left edge — the whole app is five destinations.
 
 import type { ReactNode } from "react";
 
-export type ViewId = "capture" | "graph" | "today" | "settings";
+export type ViewId = "capture" | "search" | "graph" | "today" | "settings";
 
 interface Props {
   view: ViewId;
@@ -17,6 +17,16 @@ const ITEMS: { id: ViewId; label: string; icon: ReactNode }[] = [
       <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
         <rect x="9" y="3" width="6" height="11" rx="3" />
         <path d="M5 11a7 7 0 0 0 14 0M12 18v3" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "search",
+    label: "Search",
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="m20 20-4.2-4.2" strokeLinecap="round" />
       </svg>
     ),
   },

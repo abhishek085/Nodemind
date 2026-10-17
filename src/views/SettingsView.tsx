@@ -86,11 +86,6 @@ export default function SettingsView({ settings, status, onSettings }: Props) {
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-bold">Local engine</h3>
             <div className="flex items-center gap-2">
-              {s?.coreml && (
-                <span className="rounded-full bg-ok/15 px-2 py-0.5 text-[10px] font-semibold text-ok">
-                  CoreML STT
-                </span>
-              )}
               <span
                 className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                   s?.phase === "ready"

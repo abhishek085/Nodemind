@@ -1,53 +1,54 @@
-//! The capture pipeline: voice → text → checklist + graph memory.
+//! The capture pipeline: what was said → things worth keeping.
 //!
-//! ```
-//! PCM (frontend) → wav → whisper-cli ─→ transcript
-//!                                         │
-//!              ┌──────────────┬───────────┤
-//!              ▼              ▼           ▼
-//!          clean()       annotate()   embed()  (EmbeddingGemma 2)
-//!        checklist      graph nodes   vector store
-//!                             │           │
-//!                             └─── merge (fuzzy, cosine ≥ 0.8)
+//! ```text
+//! transcript (live, audio::session)
+//!     │
+//!     ├─ sort()      rules: tasks · ideas · learnings · questions · decisions
+//!     ├─ fog         only when its cues appear (engine::fog)
+//!     │      nothing kept? → the recording is marked noise and stops here
+//!     ├─ annotate()  LLM: topics · people · goals of what was kept
+//!     ├─ tasks       → Today (duplicates skipped, engine::tasks)
+//!     ├─ items       → items table + mind-map nodes, linked to their topics
+//!     └─ EmbeddingGemma 2: search index + "similar" links between items
 //! ```
 //!
-//! Heavy steps (file IO, whisper subprocess, HTTP to the servers) run on
-//! `spawn_blocking`; the command itself is async so the UI never freezes.
+//! Meetings get minutes; "You" action items become tasks, decisions become
+//! items, and the user's own lines are sorted like a note.
 
 use std::sync::Arc;
 
 use serde::Serialize;
+use uuid::Uuid;
 
+use crate::audio::session::CaptureMode;
+use crate::engine::fog::{self, FogSignal};
+use crate::engine::meeting::{self, Minutes};
+use crate::engine::sort::{self, Kind};
 use crate::error::{Error, Result};
 use crate::state::AppState;
 use crate::store::{db, graph, vec_};
 use crate::time;
-use uuid::Uuid;
+pub use crate::engine::tasks::TaskRef;
 
-/// A task extracted by the annotator.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskDraft {
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub due_hint: Option<String>,
-}
-
-/// Structured extraction from a transcript.
+/// What a recording is about (LLM).
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Annotation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    pub tasks: Vec<TaskDraft>,
     pub topics: Vec<String>,
     pub people: Vec<String>,
     pub goals: Vec<String>,
-    /// ids of earlier thoughts this one relates to
-    pub related: Vec<String>,
     pub sentiment: String,
+}
+
+/// An idea / learning / question / decision kept from a recording.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemRef {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
 }
 
 /// What the UI shows after a capture completes.
@@ -57,346 +58,333 @@ pub struct CaptureResult {
     pub thought_id: String,
     pub transcript: String,
     pub summary: Option<String>,
-    pub tasks: Vec<String>,
+    /// Tasks, already added to Today (the UI offers undo).
+    pub tasks: Vec<TaskRef>,
+    /// Ideas, learnings, questions and decisions.
+    pub items: Vec<ItemRef>,
     pub topics: Vec<String>,
     pub people: Vec<String>,
-    pub related: Vec<String>,
-    /// Parsed direct command, if the transcript looked like one ("remind me…",
-    /// "start focus…"). The UI renders it as an actionable chip.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<crate::engine::llm::CommandIntent>,
+    /// Where the thinking seemed stuck, if anywhere.
+    pub fog: Vec<FogSignal>,
+    /// Nothing worth keeping (small talk, a test): hidden from Today and the map.
+    pub noise: bool,
     pub duration_secs: i64,
-}
-
-/// Cheap pre-filter for the command parser — most transcripts are ambient
-/// brain-dumps and should not pay for an LLM classification call.
-fn looks_like_command(t: &str) -> bool {
-    let lower = t.to_lowercase();
-    if lower.contains("remind me")
-        || lower.contains("add a task")
-        || lower.contains("add task")
-        || lower.contains("start focus")
-        || lower.contains("start a focus")
-        || lower.contains("note that")
-    {
-        return true;
-    }
-    lower
-        .split_whitespace()
-        .take(3)
-        .any(|w| matches!(w, "add" | "remind" | "note" | "jot" | "create" | "start"))
+    pub mode: CaptureMode,
+    /// Meeting minutes (meeting mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<Minutes>,
 }
 
 fn stage(state: &AppState, stage: &str) {
-    state.emit(
-        "capture-stage",
-        &serde_json::json!({ "stage": stage, "ts": time::now_millis() }),
-    );
+    state.emit("capture-stage", &serde_json::json!({ "stage": stage, "ts": time::now_millis() }));
 }
 
-/// 20 minutes of 16 kHz mono s16 — the capture ceiling.
-pub const MAX_CAPTURE_BYTES: usize = 20 * 60 * 16_000 * 2;
+/// Longest single capture; the session stops itself after this.
+pub const MAX_CAPTURE_SECS: u64 = 20 * 60;
 
-/// Run the whole pipeline for the current capture buffer.
-pub async fn process_capture(state: Arc<AppState>) -> Result<CaptureResult> {
-    // 1) Pull the audio out of the shared buffer.
-    let (pcm, language, started_at_ms) = {
-        let mut cap = state
-            .capture
-            .lock()
-            .map_err(|_| Error::Capture("capture buffer poisoned".into()))?;
-        if !cap.active {
-            return Err(Error::Capture("no active capture".into()));
-        }
-        let mut pcm = std::mem::take(&mut cap.pcm);
-        let (pcm, started) = if pcm.len() > MAX_CAPTURE_BYTES {
-            // keep the most recent 20 minutes
-            let from = pcm.len() - MAX_CAPTURE_BYTES;
-            (pcm.split_off(from), cap.started_at + from as i64 / 32)
-        } else {
-            (pcm, cap.started_at)
-        };
-        cap.active = false;
-        (pcm, cap.language.clone(), started)
-    };
-    let _ = started_at_ms;
-    let duration_secs = (pcm.len() as f64 / (16_000.0 * 2.0)).round() as i64;
+fn lock(state: &AppState) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>> {
+    state.db.lock().map_err(|_| Error::Store("db poisoned".into()))
+}
 
-    if pcm.len() < 16_000 * 2 {
-        // Less than a second of audio — treat as a no-op.
-        stage(&state, "done");
-        return Ok(CaptureResult {
-            thought_id: Uuid::new_v4().to_string(),
-            transcript: "(no audio)".to_string(),
-            summary: None,
-            tasks: Vec::new(),
-            topics: Vec::new(),
-            people: Vec::new(),
-            related: Vec::new(),
-            command: None,
-            duration_secs: 0,
-        });
-    }
-
-    // 2) wav + whisper in one blocking job (tempdir must outlive both).
-    stage(&state, "transcribing");
-    let transcript = {
-        let s = state.clone();
-        let language = language.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let tmp = tempfile::Builder::new()
-                .prefix("nm-audio-")
-                .tempdir()
-                .map_err(|e| Error::Capture(format!("tempdir: {e}")))?;
-            let wav = tmp.path().join("capture.wav");
-            crate::engine::whisper::write_wav(&pcm, &wav)?;
-            let text = crate::engine::whisper::transcribe(&s, &wav, &language)?;
-            drop(tmp);
-            Ok::<String, Error>(text)
-        })
-        .await
-        .map_err(|e| Error::Capture(format!("transcription task: {e}")))?
-        .map_err(|e| Error::Capture(e.message()))?
-    };
+/// Organize a finished transcript. Transcription already happened live
+/// (see `audio::session`), so this is the only wait after the user stops.
+pub async fn organize(
+    state: Arc<AppState>,
+    transcript: String,
+    language: String,
+    started_at_ms: i64,
+    duration_secs: i64,
+    mode: CaptureMode,
+) -> Result<CaptureResult> {
     let transcript = transcript.trim().to_string();
-
-    if transcript.len() < 2 {
-        stage(&state, "done");
-        return Ok(CaptureResult {
-            thought_id: Uuid::new_v4().to_string(),
-            transcript: "(silence)".to_string(),
-            summary: None,
-            tasks: Vec::new(),
-            topics: Vec::new(),
-            people: Vec::new(),
-            related: Vec::new(),
-            command: None,
-            duration_secs,
-        });
-    }
-
-    // 3) Persist the thought first (memory survives even if the LLM step dies).
-    let thought_id = Uuid::new_v4().to_string();
-    let started_rfc = chrono::DateTime::from_timestamp_millis(started_at_ms)
-        .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339())
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-    let thought = db::Thought {
-        id: thought_id.clone(),
-        text: transcript.clone(),
+    let mut result = CaptureResult {
+        thought_id: Uuid::new_v4().to_string(),
+        transcript: transcript.clone(),
         summary: None,
-        language: language.clone(),
-        day: time::local_day_key(),
-        started_at: started_rfc,
+        tasks: Vec::new(),
+        items: Vec::new(),
+        topics: Vec::new(),
+        people: Vec::new(),
+        fog: Vec::new(),
+        noise: false,
         duration_secs,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        mode,
+        minutes: None,
     };
-    {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|_| Error::Store("db poisoned".into()))?;
-        if let Err(e) = db::insert_thought(&conn, &thought) {
-            return Err(Error::Store(e.message()));
-        }
+    if transcript.len() < 2 {
+        result.transcript = String::new(); // UI shows "didn't catch any speech"
+        stage(&state, "done");
+        return Ok(result);
     }
-    state.emit("thoughts-updated", &serde_json::json!({}));
 
-    // 4) Checklist cleanup — the flagship feature.
+    // 1) Persist the recording first (it survives even if a later step fails).
+    let said_at = chrono::DateTime::from_timestamp_millis(started_at_ms)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let thought_id = result.thought_id.clone();
+    db::insert_thought(
+        &*lock(&state)?,
+        &db::Thought {
+            id: thought_id.clone(),
+            text: transcript.clone(),
+            summary: None,
+            language,
+            day: time::local_day_key(),
+            started_at: said_at.clone(),
+            duration_secs,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            kind: match mode {
+                CaptureMode::Note => "note",
+                CaptureMode::Meeting => "meeting",
+            }
+            .to_string(),
+            minutes: None,
+            fog: None,
+            noise: false,
+        },
+    )?;
+    process(state, mode, said_at, result).await
+}
+
+/// Sort a stored recording and file everything it yields. Shared by new
+/// captures and by `reprocess` (older recordings, after sorting improves).
+async fn process(state: Arc<AppState>, mode: CaptureMode, said_at: String, mut result: CaptureResult) -> Result<CaptureResult> {
+    let thought_id = result.thought_id.clone();
+    let transcript = result.transcript.clone();
+
+    // 2) Sort what was said (and, for meetings, write the minutes).
     stage(&state, "organizing");
-    let tasks = crate::engine::llm::clean_checklist(&transcript).await.unwrap_or_default();
-
-    // 5) Graph annotation (with recent thoughts as linking context).
-    let pairs: Vec<(String, String)> = {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|_| Error::Store("db poisoned".into()))?;
-        db::get_thoughts(&conn, 8)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| t.id != thought_id)
-            .map(|t| {
-                (
-                    t.id.clone(),
-                    t.text.chars().take(140).collect::<String>(),
-                )
-            })
-            .collect()
+    let (sorted, minutes, own_words) = match mode {
+        CaptureMode::Note => (sort::sort(&transcript), None, transcript.clone()),
+        CaptureMode::Meeting => {
+            let minutes = meeting::minutes(&transcript).await.unwrap_or_else(|e| {
+                eprintln!("[meeting] minutes failed: {e}");
+                Minutes { title: "Meeting".into(), ..Minutes::default() }
+            });
+            let mine: String = transcript.lines().filter_map(|l| l.strip_prefix("You: ")).collect::<Vec<_>>().join(" ");
+            // The 0.8B model files commitments under "decisions" and misses
+            // casual ones ("I'll book the demo room too"), so rules decide:
+            //  - decisions: agreements anywhere in the call;
+            //  - the user's own lines: tasks, ideas, learnings, questions;
+            //  - plus the model's action items for "You" (duplicates merge later).
+            let mut sorted: Vec<sort::Item> = sort::sort(&mine).into_iter().filter(|i| i.kind != Kind::Decision).collect();
+            sorted.extend(sort::sort(&sort::strip_speakers(&transcript)).into_iter().filter(|i| i.kind == Kind::Decision));
+            sorted.extend(minutes.action_items.iter().filter(|a| a.is_mine()).map(|a| sort::Item {
+                kind: Kind::Task,
+                text: if a.due.is_empty() { a.task.clone() } else { format!("{} ({})", a.task, a.due) },
+            }));
+            let mut minutes = minutes;
+            minutes.decisions = sorted.iter().filter(|i| i.kind == Kind::Decision).map(|i| i.text.clone()).collect();
+            (sorted, Some(minutes), mine)
+        }
     };
-    let annotation =
-        crate::engine::llm::annotate(&transcript, &pairs).await.unwrap_or_default();
+    let fog_signals = fog::detect(&own_words).await;
 
-    // 5b) Direct-command pre-pass — only for transcripts that *look* like a
-    // command, so ambient brain-dumps don't pay for the call.
-    let command = if looks_like_command(&transcript) {
-        crate::engine::llm::parse_command(&transcript)
-            .await
-            .ok()
-            .filter(|c| c.intent != "unknown")
-    } else {
-        None
+    // Nothing worth keeping: mark it and stop — no tasks, no map, no index.
+    if sorted.is_empty() && fog_signals.is_empty() && minutes.as_ref().is_none_or(|m| m.summary.is_empty()) {
+        lock(&state)?
+            .execute("UPDATE thoughts SET noise = 1 WHERE id = ?1", rusqlite::params![thought_id])
+            .map_err(|e| Error::Store(e.to_string()))?;
+        result.noise = true;
+        state.emit("thoughts-updated", &serde_json::json!({}));
+        stage(&state, "done");
+        return Ok(result);
+    }
+
+    // 3) What it's about: annotate the kept statements (clean, short), or the
+    // minutes / own words when nothing was itemised.
+    let kept_text = sorted.iter().map(|i| i.text.as_str()).collect::<Vec<_>>().join(". ");
+    // Only things that were kept get topics and people — never the
+    // transcript of small talk or nonsense.
+    let annotation = match &minutes {
+        Some(m) => crate::engine::llm::annotate(&format!("{}. {}. {kept_text}", m.title, m.summary)).await.unwrap_or_default(),
+        None if kept_text.is_empty() => Annotation::default(),
+        None => crate::engine::llm::annotate(&kept_text).await.unwrap_or_default(),
     };
+    let summary = minutes
+        .as_ref()
+        .map(|m| m.summary.clone())
+        .filter(|s| !s.is_empty())
+        .or(annotation.summary.clone())
+        .or_else(|| sorted.first().map(|i| i.text.clone()));
 
-    // 5c) Cognitive Mirror — friction signals, only for longer transcripts.
-    let fog_signals = if transcript.chars().count() > 200 {
-        crate::engine::llm::fog(&transcript).await.unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // 4) Tasks → Today (duplicates of open tasks skipped).
+    let task_titles: Vec<String> = sorted.iter().filter(|i| i.kind == Kind::Task).map(|i| i.text.clone()).collect();
+    result.tasks = crate::engine::tasks::add_unique(&state, task_titles, Some(thought_id.clone()))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[tasks] add failed: {e}");
+            Vec::new()
+        });
 
-    // 6) Embed: thought + entity labels in one batch call.
-    let mut embed_texts: Vec<String> = Vec::new();
-    embed_texts.push(transcript.chars().take(8_000).collect());
-    embed_texts.extend(annotation.topics.iter().cloned().take(8));
-    embed_texts.extend(annotation.people.iter().cloned().take(8));
-    embed_texts.extend(annotation.goals.iter().cloned().take(8));
-    let embed_model = "embeddinggemma-2";
-    let vectors = crate::engine::llm::embed(&embed_texts).await.unwrap_or_default();
-
-    // 7) Vector store + graph + tasks (all local).
+    // 5) Items → table + map nodes; entities; fog hubs.
+    let entity_labels: Vec<(&str, &String)> = [("topic", &annotation.topics), ("person", &annotation.people), ("goal", &annotation.goals)]
+        .into_iter()
+        .flat_map(|(k, v)| v.iter().take(5).map(move |l| (k, l)))
+        .collect();
+    let entity_vecs = crate::engine::llm::embed(&entity_labels.iter().map(|(_, l)| (*l).clone()).collect::<Vec<_>>())
+        .await
+        .unwrap_or_default();
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|_| Error::Store("db poisoned".into()))?;
-
-        // thought vector + node
-        let thought_vec: Option<&[f32]> = vectors.first().map(|v| v.as_slice());
-        if let Some(v) = thought_vec {
-            let _ = vec_::insert(&conn, "thought", &thought_id, embed_model, v);
+        let conn = lock(&state)?;
+        // Tasks are map nodes too (green), so task-heavy speech still shows up.
+        let task_nodes: Vec<ItemRef> = result
+            .tasks
+            .iter()
+            .map(|t| ItemRef { id: t.id.clone(), kind: "task".into(), text: t.title.clone() })
+            .collect();
+        for t in &task_nodes {
+            graph::upsert_item_node(&conn, &t.id, "task", &t.text, &said_at)?;
         }
-        // Thought node is keyed by the thought's UUID (thoughts are unique
-        // events; get_graph joins this id back to the thoughts table).
-        let excerpt: String = transcript.split_whitespace().take(12).collect::<Vec<_>>().join(" ");
-        let _ = graph::upsert_thought_node(&conn, &thought_id, excerpt.trim(), &annotation.sentiment);
-
-        // entity nodes (topics / people / goals)
-        let mut entity_ids: Vec<(String, String)> = Vec::new(); // (id, kind)
-        let mut vi = 1usize;
-        for (kind, labels) in [
-            ("topic", &annotation.topics),
-            ("person", &annotation.people),
-            ("goal", &annotation.goals),
-        ] {
-            for label in labels.iter().take(8) {
-                let vec = vectors.get(vi).cloned().unwrap_or_default();
-                vi += 1;
-                if !vec.is_empty() {
-                    let _ = vec_::insert(&conn, kind, label, embed_model, &vec);
-                }
-                let vec_ref = if vec.is_empty() { None } else { Some(vec.as_slice()) };
-                if let Some(id) =
-                    graph::upsert_entity(&conn, embed_model, kind, label, &annotation.sentiment, vec_ref)?
-                {
-                    entity_ids.push((id, kind.to_string()));
-                }
-            }
-        }
-
-        // edges: thought → its entities; thought → related thoughts
-        for (id, _) in &entity_ids {
-            let _ = graph::upsert_edge(&conn, &thought_id, id, "involves");
-        }
-        for rel in &annotation.related {
-            if rel != &thought_id {
-                let _ = graph::upsert_edge(&conn, &thought_id, rel, "relates_to");
-            }
-        }
-
-        // tasks from the annotator
-        for t in &annotation.tasks {
-            let task = db::Task {
+        for i in sorted.iter().filter(|i| i.kind != Kind::Task) {
+            let item = db::Item {
                 id: Uuid::new_v4().to_string(),
-                title: t.title.clone(),
-                project: t.project.clone(),
-                thought_id: Some(thought_id.clone()),
-                done: false,
-                created_at: chrono::Utc::now().to_rfc3339(),
+                thought_id: thought_id.clone(),
+                kind: i.kind.as_str().to_string(),
+                text: i.text.clone(),
+                created_at: said_at.clone(),
             };
-            let _ = db::insert_task(&conn, &task);
+            db::insert_item(&conn, &item)?;
+            graph::upsert_item_node(&conn, &item.id, &item.kind, &item.text, &said_at)?;
+            result.items.push(ItemRef { id: item.id, kind: item.kind, text: item.text });
         }
 
-        // tasks from a parsed direct command ("remind me to …")
-        if let Some(cmd) = &command {
-            if cmd.intent == "create_task" {
-                if let Some(title) = cmd.title.as_deref().map(str::trim).filter(|t| !t.is_empty())
-                {
-                    let task = db::Task {
-                        id: Uuid::new_v4().to_string(),
-                        title: title.to_string(),
-                        project: None,
-                        thought_id: Some(thought_id.clone()),
-                        done: false,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    let _ = db::insert_task(&conn, &task);
+        let mut entity_ids = Vec::new();
+        for (n, (kind, label)) in entity_labels.iter().enumerate() {
+            let vec = entity_vecs.get(n).filter(|v| !v.is_empty());
+            if let Some(v) = vec {
+                let _ = vec_::insert(&conn, kind, label, crate::engine::search::EMBED_MODEL, v);
+            }
+            if let Some(id) = graph::upsert_entity(
+                &conn,
+                crate::engine::search::EMBED_MODEL,
+                kind,
+                label,
+                &annotation.sentiment,
+                vec.map(|v| v.as_slice()),
+            )? {
+                entity_ids.push(id);
+            }
+        }
+        // Each item and task is about the recording's topics / people / goals.
+        for item in result.items.iter().chain(task_nodes.iter()) {
+            for e in &entity_ids {
+                graph::upsert_edge(&conn, &item.id, e, "involves")?;
+            }
+        }
+        // Fog hubs (one per kind) connect to what the fog was about.
+        let fog_targets: Vec<&String> = if result.items.is_empty() {
+            entity_ids.iter().collect()
+        } else {
+            result.items.iter().map(|i| &i.id).collect()
+        };
+        drop(task_nodes);
+        for f in &fog_signals {
+            if let Some(hub) = graph::upsert_entity(&conn, crate::engine::search::EMBED_MODEL, "fog", &fog::label(&f.tag), "negative", None)? {
+                for t in &fog_targets {
+                    graph::upsert_edge(&conn, &hub, t, "fog")?;
                 }
             }
         }
 
-        // Fog signals → meta (today's slice, capped) for the Today brief.
-        if !fog_signals.is_empty() {
-            let day = time::local_day_key();
-            let mut sigs: Vec<serde_json::Value> =
-                db::get_meta(&conn, "fog_today")
-                    .ok()
-                    .flatten()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default();
-            sigs.retain(|v| v["day"].as_str() == Some(day.as_str()));
-            for f in &fog_signals {
-                sigs.push(serde_json::json!({
-                    "day": day,
-                    "tag": f.tag,
-                    "context": f.context,
-                    "intensity": f.intensity,
-                    "question": f.question,
-                }));
-            }
-            sigs.truncate(10);
-            let _ = db::set_meta(
-                &conn,
-                "fog_today",
-                &serde_json::to_string(&sigs).unwrap_or_default(),
-            );
-        }
+        conn.execute(
+            "UPDATE thoughts SET summary = ?2, fog = ?3, minutes = ?4 WHERE id = ?1",
+            rusqlite::params![
+                thought_id,
+                summary,
+                (!fog_signals.is_empty()).then(|| serde_json::to_string(&fog_signals).unwrap_or_default()),
+                minutes.as_ref().map(|m| serde_json::to_string(m).unwrap_or_default()),
+            ],
+        )
+        .map_err(|e| Error::Store(e.to_string()))?;
+    }
 
-        // backfill the summary
-        if let Some(summary) = &annotation.summary {
-            let _ = conn.execute(
-                "UPDATE thoughts SET summary = ?2 WHERE id = ?1",
-                rusqlite::params![thought_id, summary],
-            );
+    // 6) EmbeddingGemma 2: index items + new tasks for search, then link
+    // each new item to the closest things said before.
+    let statements: Vec<(String, String, String)> = result
+        .items
+        .iter()
+        .map(|i| ("item".to_string(), i.id.clone(), i.text.clone()))
+        .chain(result.tasks.iter().map(|t| ("task".to_string(), t.id.clone(), t.title.clone())))
+        .collect();
+    if let Err(e) = crate::engine::search::index(&state, &statements).await {
+        eprintln!("[search] indexing failed: {e}");
+    }
+    {
+        let conn = lock(&state)?;
+        for item in &result.items {
+            let _ = crate::engine::links::link_similar(&conn, &item.id);
         }
     }
 
     state.emit("thoughts-updated", &serde_json::json!({}));
     state.emit("tasks-updated", &serde_json::json!({}));
-    state.emit(
-        "capture-complete",
-        &serde_json::json!({ "thoughtId": thought_id }),
-    );
+    // `capture-complete` (with the full result) is emitted by audio::session.
     stage(&state, "done");
 
-    Ok(CaptureResult {
-        thought_id,
-        transcript,
-        summary: annotation.summary.clone(),
-        tasks,
-        topics: annotation.topics,
-        people: annotation.people,
-        related: annotation.related,
-        command,
-        duration_secs,
-    })
+    result.summary = summary;
+    result.topics = annotation.topics;
+    result.people = annotation.people;
+    result.fog = fog_signals;
+    result.minutes = minutes;
+    Ok(result)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn max_capture_is_20_minutes() {
-        assert_eq!(MAX_CAPTURE_BYTES, 20 * 60 * 16_000 * 2);
-    }
+/// Re-sort recordings made before the current sorting existed (once, at
+/// startup): clears what they produced and files it again.
+pub fn reprocess_old_in_background(state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        const FLAG: &str = "sorted_v3";
+        let todo: Vec<db::Thought> = match state.db.lock() {
+            Ok(conn) => {
+                if db::get_meta(&conn, FLAG).ok().flatten().is_some() {
+                    return;
+                }
+                let mut stmt = match conn.prepare(&format!("SELECT {} FROM thoughts WHERE kind = 'note' ORDER BY created_at", db::THOUGHT_COLS)) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let rows = stmt.query_map([], |r| db::thought_from_row(r)).map(|r| r.flatten().collect()).unwrap_or_default();
+                rows
+            }
+            Err(_) => return,
+        };
+        for t in todo {
+            if let Ok(conn) = state.db.lock() {
+                let items: Vec<String> = db::items_for_thought(&conn, &t.id).unwrap_or_default().into_iter().map(|i| i.id).collect();
+                let tasks: Vec<String> = db::get_tasks(&conn, true).unwrap_or_default().into_iter().filter(|x| x.thought_id.as_deref() == Some(t.id.as_str())).map(|x| x.id).collect();
+                let _ = graph::unrecord_items(&conn, &items);
+                let _ = graph::unrecord_items(&conn, &tasks);
+                let _ = conn.execute("DELETE FROM items WHERE thought_id = ?1", rusqlite::params![t.id]);
+                for id in &tasks {
+                    let _ = db::delete_task(&conn, id);
+                }
+                let _ = conn.execute("UPDATE thoughts SET noise = 0, fog = NULL WHERE id = ?1", rusqlite::params![t.id]);
+            }
+            let result = CaptureResult {
+                thought_id: t.id.clone(),
+                transcript: t.text.clone(),
+                summary: None,
+                tasks: Vec::new(),
+                items: Vec::new(),
+                topics: Vec::new(),
+                people: Vec::new(),
+                fog: Vec::new(),
+                noise: false,
+                duration_secs: t.duration_secs,
+                mode: CaptureMode::Note,
+                minutes: None,
+            };
+            if let Err(e) = process(state.clone(), CaptureMode::Note, t.started_at.clone(), result).await {
+                eprintln!("[reprocess] {} failed: {e}", t.id);
+            }
+        }
+        if let Ok(conn) = state.db.lock() {
+            let _ = crate::engine::links::prune_junk(&conn); // entities orphaned by the re-sort
+            let _ = db::set_meta(&conn, FLAG, "1");
+        }
+        state.emit("thoughts-updated", &serde_json::json!({}));
+        state.emit("tasks-updated", &serde_json::json!({}));
+        crate::applog::write(&state, "app.log", "re-sorted existing recordings");
+    });
 }

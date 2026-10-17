@@ -2,7 +2,8 @@
 # Build NodeMind's local AI sidecars from source and install them as Tauri
 # external binaries into src-tauri/binaries/<name>-<triple>.
 #
-#   whisper.cpp  v1.9.5   → whisper-cli   (Metal/CoreML on Apple Silicon)
+#   whisper.cpp  v1.9.5   → whisper-server (resident, live transcription)
+#                           whisper-cli    (fallback)            — Metal
 #   llama.cpp    b11609   → llama-server  (Metal)
 #
 # One-time cost (~10–20 min on Apple Silicon). Re-run after bumping the
@@ -27,9 +28,11 @@ if [[ ! -d "$BUILD/whisper.cpp" ]]; then
 fi
 cmake -S "$BUILD/whisper.cpp" -B "$BUILD/whisper.cpp/build" \
   -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build "$BUILD/whisper.cpp/build" --target whisper-cli -j "$JOBS"
-install -m 755 "$BUILD/whisper.cpp/build/bin/whisper-cli" "$OUT/whisper-cli-$TRIPLE"
-echo "✓ whisper-cli → $OUT/whisper-cli-$TRIPLE"
+cmake --build "$BUILD/whisper.cpp/build" --target whisper-cli whisper-server -j "$JOBS"
+for bin in whisper-cli whisper-server; do
+  install -m 755 "$BUILD/whisper.cpp/build/bin/$bin" "$OUT/$bin-$TRIPLE"
+  echo "✓ $bin → $OUT/$bin-$TRIPLE"
+done
 
 # ── llama.cpp ───────────────────────────────────────────────────────────────
 if [[ ! -d "$BUILD/llama.cpp" ]]; then
@@ -42,5 +45,10 @@ cmake -S "$BUILD/llama.cpp" -B "$BUILD/llama.cpp/build" \
 cmake --build "$BUILD/llama.cpp/build" --target llama-server -j "$JOBS"
 install -m 755 "$BUILD/llama.cpp/build/bin/llama-server" "$OUT/llama-server-$TRIPLE"
 echo "✓ llama-server → $OUT/llama-server-$TRIPLE"
+
+# ── nodemind-helper (Swift: EventKit calendar + system-audio tap) ──────────
+swiftc -O -swift-version 5 -target arm64-apple-macos13.0 \
+  "$ROOT/src-tauri/native/nodemind-helper.swift" -o "$OUT/nodemind-helper-$TRIPLE"
+echo "✓ nodemind-helper → $OUT/nodemind-helper-$TRIPLE"
 
 echo "All sidecars built. Run the app to smoke-test them."

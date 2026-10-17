@@ -4,6 +4,12 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Nodemind listens to your voice so you can brain-dump. Audio is transcribed entirely on your Mac — it never leaves this device.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>In meeting mode, Nodemind records the call audio playing on this Mac so your notes include what others said. It is transcribed on your Mac and never leaves this device.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Nodemind reads today's calendar to plan your day around your meetings. It never changes your calendar.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Nodemind reads today's calendar to plan your day around your meetings. It never changes your calendar.</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
 	<key>NSSupportsSuddenTermination</key>

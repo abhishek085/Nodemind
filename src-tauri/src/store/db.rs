@@ -28,6 +28,14 @@ pub struct Thought {
     pub started_at: String, // RFC3339
     pub duration_secs: i64,
     pub created_at: String,
+    /// "note" (a brain-dump) or "meeting" (labelled You/Them transcript).
+    pub kind: String,
+    /// Meeting minutes as JSON (`engine::meeting::Minutes`), meetings only.
+    pub minutes: Option<String>,
+    /// Fog signals as JSON (`engine::fog::FogSignal[]`), when any were found.
+    pub fog: Option<String>,
+    /// Nothing worth keeping was said (small talk, a test): hidden from Today and the map.
+    pub noise: bool,
 }
 
 /// A concrete to-do extracted from a thought (or added by hand).
@@ -79,18 +87,6 @@ pub struct CalendarEvent {
     pub day: String,
 }
 
-/// A logged focus session (25-minute style work blocks).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FocusSession {
-    pub id: String,
-    pub title: Option<String>,
-    pub day: String,
-    pub started_at: String,
-    pub ended_at: Option<String>,
-    pub minutes: i64,
-}
-
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 const SCHEMA: &str = r#"
@@ -102,7 +98,11 @@ CREATE TABLE IF NOT EXISTS thoughts (
   day           TEXT NOT NULL,
   started_at    TEXT NOT NULL,
   duration_secs INTEGER NOT NULL DEFAULT 0,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'note',
+  minutes       TEXT,
+  fog           TEXT,
+  noise         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_thoughts_day ON thoughts(day);
 CREATE INDEX IF NOT EXISTS idx_thoughts_created ON thoughts(created_at);
@@ -146,6 +146,15 @@ CREATE TABLE IF NOT EXISTS embeddings (
   vec      BLOB NOT NULL       -- little-endian f32
 );
 CREATE INDEX IF NOT EXISTS idx_embeddings_ref ON embeddings(ref_kind, ref_id);
+
+CREATE TABLE IF NOT EXISTS items (
+  id         TEXT PRIMARY KEY,
+  thought_id TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_items_thought ON items(thought_id);
 
 CREATE TABLE IF NOT EXISTS calendar_events (
   id       TEXT PRIMARY KEY,
@@ -191,6 +200,8 @@ pub fn open_database(data_dir: &Path) -> Result<Connection> {
 /// yet to rebuild). Afterwards the batch creates whatever is missing —
 /// including the named indexes on the rebuilt tables.
 pub fn init_schema(conn: &mut Connection) -> Result<()> {
+    // Superseded by `items` (search now indexes statements, not passages).
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS passages;");
     normalize_shapes(conn)?;
     conn.execute_batch(SCHEMA).map_err(|e| crate::error::Error::Store(e.to_string()))?;
     migrate_legacy(conn)?;
@@ -484,8 +495,6 @@ fn migrate_legacy(conn: &mut Connection) -> Result<()> {
                 params![id, summary, day, created_at],
             )
             .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-            let label: String = summary.trim().chars().take(48).collect();
-            super::graph::upsert_thought_node(&tx, &id, &label, "neutral")?;
             if let Ok(items) = serde_json::from_str::<Vec<String>>(&tasks_json) {
                 for item in items {
                     let title = item.trim();
@@ -552,8 +561,8 @@ fn migrate_legacy(conn: &mut Connection) -> Result<()> {
 
 pub fn insert_thought(conn: &Connection, t: &Thought) -> Result<()> {
     conn.execute(
-        "INSERT INTO thoughts (id, text, summary, language, day, started_at, duration_secs, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO thoughts (id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes, fog, noise)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             t.id,
             t.text,
@@ -562,14 +571,18 @@ pub fn insert_thought(conn: &Connection, t: &Thought) -> Result<()> {
             t.day,
             t.started_at,
             t.duration_secs,
-            t.created_at
+            t.created_at,
+            t.kind,
+            t.minutes,
+            t.fog,
+            t.noise
         ],
     )
     .map_err(|e| crate::error::Error::Store(e.to_string()))?;
     Ok(())
 }
 
-fn thought_from_row(row: &rusqlite::Row) -> SqlResult<Thought> {
+pub fn thought_from_row(row: &rusqlite::Row) -> SqlResult<Thought> {
     Ok(Thought {
         id: row.get(0)?,
         text: row.get(1)?,
@@ -579,13 +592,18 @@ fn thought_from_row(row: &rusqlite::Row) -> SqlResult<Thought> {
         started_at: row.get(5)?,
         duration_secs: row.get(6)?,
         created_at: row.get(7)?,
+        kind: row.get(8)?,
+        minutes: row.get(9)?,
+        fog: row.get(10)?,
+        noise: row.get(11)?,
     })
 }
 
 pub const THOUGHT_COLS: &str =
-    "id, text, summary, language, day, started_at, duration_secs, created_at";
+    "id, text, summary, language, day, started_at, duration_secs, created_at, kind, minutes, fog, noise";
 
 /// Recent thoughts, newest first.
+#[cfg(test)]
 pub fn get_thoughts(conn: &Connection, limit: i64) -> Result<Vec<Thought>> {
     let mut stmt = conn
         .prepare(&format!("SELECT {THOUGHT_COLS} FROM thoughts ORDER BY created_at DESC LIMIT ?1"))
@@ -623,7 +641,14 @@ pub fn get_thoughts_for_day(conn: &Connection, day: &str) -> Result<Vec<Thought>
 
 /// Delete a thought and everything derived from it (tasks + vectors).
 pub fn delete_thought(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM embeddings WHERE ref_kind = 'task' AND ref_id IN (SELECT id FROM tasks WHERE thought_id = ?1)",
+        params![id],
+    )
+    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
     conn.execute("DELETE FROM tasks WHERE thought_id = ?1", params![id])
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    conn.execute("DELETE FROM items WHERE thought_id = ?1", params![id])
         .map_err(|e| crate::error::Error::Store(e.to_string()))?;
     conn.execute(
         "DELETE FROM embeddings WHERE ref_kind = 'thought' AND ref_id = ?1",
@@ -633,6 +658,66 @@ pub fn delete_thought(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])
         .map_err(|e| crate::error::Error::Store(e.to_string()))?;
     Ok(())
+}
+
+// ── Items (ideas, learnings, questions, decisions) ──────────────────────────
+
+/// Something worth keeping that was said (see `engine::sort`). Tasks live in
+/// the `tasks` table; everything else lands here.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Item {
+    pub id: String,
+    pub thought_id: String,
+    pub kind: String,
+    pub text: String,
+    pub created_at: String,
+}
+
+fn item_from_row(r: &rusqlite::Row) -> SqlResult<Item> {
+    Ok(Item { id: r.get(0)?, thought_id: r.get(1)?, kind: r.get(2)?, text: r.get(3)?, created_at: r.get(4)? })
+}
+
+pub fn insert_item(conn: &Connection, item: &Item) -> Result<()> {
+    conn.execute(
+        "INSERT INTO items (id, thought_id, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![item.id, item.thought_id, item.kind, item.text, item.created_at],
+    )
+    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(())
+}
+
+pub fn get_item(conn: &Connection, id: &str) -> Result<Option<Item>> {
+    conn.query_row("SELECT id, thought_id, kind, text, created_at FROM items WHERE id = ?1", params![id], item_from_row)
+        .optional()
+        .map_err(|e| crate::error::Error::Store(e.to_string()))
+}
+
+pub fn items_for_thought(conn: &Connection, thought_id: &str) -> Result<Vec<Item>> {
+    let mut stmt = conn
+        .prepare("SELECT id, thought_id, kind, text, created_at FROM items WHERE thought_id = ?1 ORDER BY rowid")
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    let rows = stmt
+        .query_map(params![thought_id], item_from_row)
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(rows.flatten().collect())
+}
+
+/// Items and open tasks that have no search vector yet: (ref_kind, id, text).
+pub fn unindexed_statements(conn: &Connection, model: &str) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT 'item', id, text FROM items i WHERE NOT EXISTS
+               (SELECT 1 FROM embeddings e WHERE e.ref_kind = 'item' AND e.ref_id = i.id AND e.model = ?1)
+             UNION ALL
+             SELECT 'task', id, title FROM tasks t WHERE NOT EXISTS
+               (SELECT 1 FROM embeddings e WHERE e.ref_kind = 'task' AND e.ref_id = t.id AND e.model = ?1)",
+        )
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    let rows = stmt
+        .query_map(params![model], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
+    Ok(rows.flatten().collect())
 }
 
 // ── Tasks ───────────────────────────────────────────────────────────────────
@@ -712,82 +797,6 @@ pub fn replace_calendar_day(conn: &Connection, day: &str, events: &[CalendarEven
     Ok(())
 }
 
-pub fn get_calendar_day(conn: &Connection, day: &str) -> Result<Vec<CalendarEvent>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, start, end, calendar, day
-             FROM calendar_events WHERE day = ?1 ORDER BY start",
-        )
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    let rows = stmt
-        .query_map(params![day], |r| {
-            Ok(CalendarEvent {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                start: r.get(2)?,
-                end: r.get(3)?,
-                calendar: r.get(4)?,
-                day: r.get(5)?,
-            })
-        })
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    rows.collect::<SqlResult<Vec<_>>>()
-        .map_err(|e| crate::error::Error::Store(e.to_string()))
-}
-
-// ── Focus sessions ──────────────────────────────────────────────────────────
-
-pub fn insert_focus(conn: &Connection, s: &FocusSession) -> Result<()> {
-    conn.execute(
-        "INSERT INTO focus_sessions (id, title, day, started_at, ended_at, minutes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![s.id, s.title, s.day, s.started_at, s.ended_at, s.minutes],
-    )
-    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    Ok(())
-}
-
-pub fn finish_focus(conn: &Connection, id: &str, ended_at: &str, minutes: i64) -> Result<()> {
-    conn.execute(
-        "UPDATE focus_sessions SET ended_at = ?2, minutes = ?3 WHERE id = ?1",
-        params![id, ended_at, minutes],
-    )
-    .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    Ok(())
-}
-
-pub fn get_focus_today(conn: &Connection, day: &str) -> Result<Vec<FocusSession>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, day, started_at, ended_at, minutes
-             FROM focus_sessions WHERE day = ?1 ORDER BY started_at",
-        )
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    let rows = stmt
-        .query_map(params![day], |r| {
-            Ok(FocusSession {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                day: r.get(2)?,
-                started_at: r.get(3)?,
-                ended_at: r.get(4)?,
-                minutes: r.get(5)?,
-            })
-        })
-        .map_err(|e| crate::error::Error::Store(e.to_string()))?;
-    rows.collect::<SqlResult<Vec<_>>>()
-        .map_err(|e| crate::error::Error::Store(e.to_string()))
-}
-
-pub fn focus_minutes_today(conn: &Connection, day: &str) -> i64 {
-    conn.query_row(
-        "SELECT COALESCE(SUM(minutes), 0) FROM focus_sessions WHERE day = ?1 AND ended_at IS NOT NULL",
-        params![day],
-        |r| r.get::<_, i64>(0),
-    )
-    .unwrap_or(0)
-}
-
 // ── Meta ────────────────────────────────────────────────────────────────────
 
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
@@ -843,6 +852,10 @@ mod tests {
             started_at: "2026-10-13T10:00:00Z".into(),
             duration_secs: 30,
             created_at: "2026-10-13T10:00:00Z".into(),
+            kind: "note".into(),
+            minutes: None,
+            fog: None,
+            noise: false,
         };
         insert_thought(&conn, &t).unwrap();
         assert_eq!(get_thoughts(&conn, 10).unwrap().len(), 1);
@@ -939,15 +952,12 @@ mod tests {
         assert!(titles.contains(&"Explore TRL library"));
         assert_eq!(tasks.len(), 4, "1 legacy + 2 note + 1 suggestion: {titles:?}");
 
-        // Notes became thoughts with a graph node each.
+        // Notes became thoughts (the map shows items, not recordings).
         assert_eq!(get_thoughts(&conn, 10).unwrap().len(), 1);
         let graph_nodes = crate::store::graph::get_nodes(&conn).unwrap();
         let kinds: Vec<_> = graph_nodes.iter().map(|n| n.node_type.as_str()).collect();
         assert!(kinds.contains(&"person"));
         assert!(kinds.contains(&"goal"), "project remapped to goal: {kinds:?}");
-        // The imported note has a graph node (so it shows on the inner ring).
-        let node_ids: Vec<_> = graph_nodes.iter().map(|n| n.id.as_str()).collect();
-        assert!(node_ids.contains(&"history-1"));
 
         // Edges imported only when both endpoints exist.
         let edges = crate::store::graph::get_graph(&conn, 100).unwrap().edges;
@@ -960,30 +970,24 @@ mod tests {
         // The rebuilt focus table accepts the new write pattern (nullable
         // title; the v1 NOT NULL date/start_time columns are gone) and the
         // legacy row survived the rebuild.
-        insert_focus(
-            &conn,
-            &FocusSession {
-                id: "f2".into(),
-                title: None,
-                day: "2026-04-02".into(),
-                started_at: "2026-04-02T09:00:00Z".into(),
-                ended_at: None,
-                minutes: 0,
-            },
+        conn.execute(
+            "INSERT INTO focus_sessions (id, title, day, started_at, ended_at, minutes)
+             VALUES ('f2', NULL, '2026-04-02', '2026-04-02T09:00:00Z', NULL, 0)",
+            [],
         )
         .unwrap();
-        assert_eq!(get_focus_today(&conn, "2026-04-02").unwrap().len(), 1);
         // The legacy row kept its data across the column rename (date → day).
-        let legacy_focus = get_focus_today(&conn, "2026-04-01").unwrap();
-        assert_eq!(legacy_focus.len(), 1);
-        assert_eq!(legacy_focus[0].title.as_deref(), Some("Legacy focus"));
+        let legacy_title: Option<String> = conn
+            .query_row("SELECT title FROM focus_sessions WHERE day = '2026-04-01'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy_title.as_deref(), Some("Legacy focus"));
         drop(conn);
 
         // Second open: idempotent — no duplicate imports, no re-stamp churn.
         let conn = super::open_database(dir.path()).unwrap();
         assert_eq!(get_tasks(&conn, true).unwrap().len(), 4);
         assert_eq!(get_thoughts(&conn, 10).unwrap().len(), 1);
-        assert_eq!(crate::store::graph::get_nodes(&conn).unwrap().len(), 3);
+        assert_eq!(crate::store::graph::get_nodes(&conn).unwrap().len(), 2);
         let focus_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM focus_sessions", [], |r| r.get(0)).unwrap();
         assert_eq!(focus_count, 2);

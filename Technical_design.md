@@ -35,30 +35,38 @@ Nothing leaves the machine. There is no backend, no account, no telemetry.
 ┌──────────────▼──────────────────────────────────────────────────────────────────────▼─────────────┐
 │  Rust (src-tauri/src/)                                                                              │
 │                                                                                                    │
-│  commands/         the IPC surface: capture · thoughts · today · calendar · settings · updates ·   │
+│  commands/         the IPC surface: capture · thoughts/today · calendar · settings · updates ·     │
 │  (thin)            engine — validate, lock state, emit events, return plain serializable shapes    │
 │                                                                                                    │
-│  engine/           pipeline.rs   capture → wav → whisper → clean → annotate → embed → store        │
-│                    sidecar.rs    spawns/health-checks two loopback llama-servers; killed on exit   │
-│                    whisper.rs    whisper-cli per transcription (Metal, auto CoreML encoder)        │
-│                    llm.rs        chat() + extract_json(): clean · annotate · fog · brief ·         │
-│                                  parse_command · embed()   — all prompts from resources/prompts.toml│
-│  store/            db.rs         SQLite: thoughts · tasks · calendar_day · focus · meta            │
+│  audio/            mic (CoreAudio) + system tap (meeting) → pause segmenter → live session        │
+│  engine/           pipeline.rs   organize: checklist · annotate · fog · minutes → graph + index    │
+│                    sidecar.rs    spawns/health-checks llama-servers + whisper-server; killed on exit│
+│                    whisper.rs    whisper-server per utterance (whisper-cli fallback), Metal         │
+│                    llm.rs        chat() + extract_json() — prompts from resources/prompts.toml      │
+│                    tasks.rs      checklist entry point, duplicate check (filler + EmbeddingGemma)   │
+│                    fog.rs        where thinking is stuck: cue gate → model → cue verification       │
+│                    links.rs      thought↔thought "similar" links by EmbeddingGemma; junk filter     │
+│                    search.rs     semantic search over items + tasks, with keyword boost             │
+│                    sort.rs       rules: what was said → task/idea/learning/question/decision        │
+│                    meeting.rs    You/Them transcript + map-reduce minutes                           │
+│  store/            db.rs         SQLite: thoughts · tasks · items · calendar_day · meta             │
 │                    graph.rs      graph_nodes / graph_edges + fuzzy label merge (cosine ≥ 0.8)      │
 │                    vec_.rs       brute-force cosine kNN over f32 BLOBs (per-row model + dim)       │
 │  models/           manifest      pinned URLs + sha256 + expected sizes                              │
 │                    downloader    resumable, streaming, progress events                             │
-│  calendar/         osascript → Apple Calendar events (read-only); errors → permission_hint         │
+│  calendar/         EventKit via nodemind-helper (AppleScript fallback), read-only                  │
 │  state.rs          Arc<AppState>: db conn, sidecar children, capture buffer, engine status        │
 └──────────────┬──────────────────────────────────────┬─────────────────────────────────────────────┘
                │ spawn (127.0.0.1 only)              │ reads/writes
    ┌───────────▼───────────┐              ┌──────────▼──────────────────────────────┐
    │ sidecars (bundled)    │              │ app-data: ~/Library/Application Support  │
    │ llama-server :8642    │              │   /com.nokast.nodemind/                  │
-   │   → Llama 3.2 1B      │              │   nodemind.db · models/ (whisper ggml-   │
-   │ llama-server :8643    │              │   small + CoreML encoder, Llama 1B,      │
-   │   → EmbeddingGemma 2  │              │   EmbeddingGemma 2) + prompts.toml copy │
-   │ whisper-cli (on demand)│             └──────────────────────────────────────────┘
+   │   → Qwen3.5 0.8B      │              │   nodemind.db · logs/ · models/          │
+   │ llama-server :8643    │              │   (whisper ggml-small, Qwen3.5 0.8B,     │
+   │   → EmbeddingGemma 2  │              │   EmbeddingGemma 2 — downloaded once)    │
+   │ whisper-server :8644  │              └──────────────────────────────────────────┘
+   │ nodemind-helper (Swift│
+   │  EventKit + audio tap)│
    └───────────────────────┘
 ```
 
@@ -75,16 +83,17 @@ are spawned by the app at boot, health-checked, and killed on exit.
 PCM (webview, 16 kHz mono s16le, base64 chunks → append_audio)
         │  (Rust buffers into a wav; 20-minute cap; silence & no-audio fast paths)
         ▼
-whisper-cli  ── ggml-small (+ CoreML encoder when present) on Metal ──▶ transcript
+whisper-server ── ggml-small on Metal, one utterance per pause ──▶ transcript
         │
-        ├─ clean_checklist()   LLM: ramble → 3–6 crisp checklist items
-        ├─ annotate()          LLM: summary · tasks · topics · people · goals · related · sentiment
+        ├─ sort()              rules: tasks · ideas · learnings · questions · decisions (noise → dropped)
+        ├─ annotate()          LLM: summary · topics · people · goals · sentiment (junk filtered)
         ├─ parse_command()     LLM, only if the text *looks* like a direct command
-        │                      (cheap regex pre-filter): create_task / start_focus
-        ├─ fog()               LLM, only for longer transcripts: friction signals → meta
+        │                      (cheap regex pre-filter): create_task
+        ├─ fog::detect()       only when fog cues appear; verified tags → thoughts.fog + fog nodes
         └─ embed()             EmbeddingGemma 2 vectors:
                 │                  • thought vector  → vectors table (ref = thought id)
                 │                  • label vectors   → graph node vectors (fuzzy merge key)
+                │                  • "similar" links → closest earlier thoughts (median lift)
                 ▼
 SQLite:  thoughts row (+ backfilled summary) · tasks from annotation & command ·
          graph nodes/edges (thought node keyed by UUID; entities by label slug;
@@ -105,7 +114,7 @@ an empty structure, never an error, so a capture always produces *something* use
 | `thoughts` | one per capture: text, summary, language, day, started_at, duration |
 | `tasks` | checklist items (from captures or manual), optional project, done flag |
 | `graph_nodes` | `id · node_type(thought\|topic\|person\|goal\|…) · label · mentions · last_seen · sentiment` — thought nodes are keyed by the thought UUID; entities by a label slug |
-| `graph_edges` | `from · to · edge_type(involves\|mentions\|supports\|relates_to) · weight` — upserted, weight strengthens with repetition |
+| `graph_edges` | `from · to · edge_type(involves\|similar\|fog) · weight` — upserted, weight strengthens with repetition |
 | `vectors` | `kind · ref_id · model · dim · f32 BLOB` — brute-force cosine kNN (fine at personal scale) |
 | `calendar_day` | last osascript snapshot per day (read-only mirror) |
 | `focus_sessions` | start/end, minutes |
@@ -127,18 +136,16 @@ stray prose). Temperatures are deliberately low (0.1–0.4).
 - **Mind Map** — React Flow. Thoughts on an inner ring; topics/people/goals on the
   outer ring in type sectors. Node size = degree + mentions. Search runs local
   vector kNN over the embed model; node click opens a detail panel.
-- **Today** — a `daily_brief` LLM insight (friction + one tiny next step), the
-  checklist, a 25-minute focus block with a live countdown, and the day's calendar
-  (with a permission hint when AppleScript can't read it).
+- **Today** — the checklist grouped by the thought each task came from, "Where
+  you're stuck" (today's fog signals with their unsticking questions), a timeline of
+  today's notes and meetings, and the day's calendar.
 
 ## 7. Setup & update flow
 
 1. **First launch** — `begin_setup` downloads any missing models (pinned sha256,
-   resumable, streamed progress) into app-data, then boots the engine. The bundled
-   `resources/models/` makes this a no-op for DMG installs; the download path exists
-   for slim builds and model upgrades.
-2. **Each launch** — models are resolved *app-data first, bundle second*, the two
-   servers boot on loopback, and the tray icon tracks engine health.
+   resumable, streamed progress, ~1.3 GB) into app-data, then boots the engine.
+2. **Each launch** — models are read from app-data, the three servers boot on
+   loopback in parallel, and the tray icon tracks engine health.
 3. **Updates** — the updater plugin checks the GitHub release endpoint against the
    embedded public key, downloads the signed `.app.tar.gz`, replaces the bundle,
    relaunches from `current_exe()`, and exits.
@@ -149,11 +156,11 @@ stray prose). Temperatures are deliberately low (0.1–0.4).
   `llama.cpp b11609`, Metal on, **statically linked** (`BUILD_SHARED_LIBS=OFF`,
   `LLAMA_OPENSSL=OFF`) so each is a single self-contained binary under
   `src-tauri/binaries/` (git-ignored; Tauri `externalBin`).
-- **Models** — `scripts/fetch-models.sh`: pinned HF URLs, resume + sha256 verification,
-  into `src-tauri/resources/models/` (git-ignored; bundled via `bundle.resources`).
-- **App** — `npx tauri build` → `Nodemind.app` + **DMG** with everything bundled
-  (~1.9 GB, fully offline). Release signing uses `scripts/release.sh`
-  (`tauri signer sign` + `gh release create`).
+- **Models** — not bundled: the app downloads them on first launch from pinned,
+  sha256-checked URLs (`src-tauri/src/models/manifest.rs`), so the DMG and every
+  update stay small.
+- **App** — `npx tauri build` → `Nodemind.app` + **DMG**. Release signing uses
+  `scripts/release.sh` (`tauri signer sign` + `gh release create`).
 - **MacOS specifics** — `Info.plist` carries `NSMicrophoneUsageDescription`
   (system prompt on first capture); window is an overlay title bar; tray icon with
   left-click-to-open.

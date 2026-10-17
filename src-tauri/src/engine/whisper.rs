@@ -1,12 +1,11 @@
-//! Speech-to-text via the bundled `whisper-cli` sidecar.
+//! Speech-to-text via the bundled whisper.cpp sidecars.
 //!
-//! Pipeline per capture:
-//!   PCM s16le (16 kHz mono, from the frontend) → wav file → whisper-cli
-//!   → JSON (segments) → cleaned transcript string.
+//! Live path (per utterance, while the user is still talking):
+//!   16 kHz mono f32 → in-memory wav → `whisper-server` /inference → text
+//! Fallback when the server isn't running:
+//!   wav file → `whisper-cli` → JSON (segments) → text
 //!
-//! The CoreML encoder (`ggml-small-encoder.mlmodelc`, sibling of the model
-//! file) is used automatically when present and the binary was built with
-//! CoreML — otherwise it silently falls back to CPU.
+//! Both run on Metal; the resident server keeps the model loaded.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,32 +14,127 @@ use crate::models::ModelKey;
 use crate::prompts;
 use crate::state::AppState;
 
-/// Write a raw PCM s16le buffer (16 kHz mono) as a wav file.
-pub fn write_wav(pcm: &[u8], out_path: &std::path::Path) -> crate::error::Result<()> {
+/// Transcribe one utterance (16 kHz mono f32). `context` is the transcript so
+/// far; its tail is passed as whisper's prompt so sentences continue
+/// naturally across utterance boundaries.
+pub async fn transcribe_segment(
+    state: &Arc<AppState>,
+    samples: &[f32],
+    language: &str,
+    context: &str,
+) -> crate::error::Result<String> {
+    let wav = wav_bytes(samples)?;
+    if state.whisper_running.load(std::sync::atomic::Ordering::SeqCst) {
+        match transcribe_via_server(wav.clone(), language, context).await {
+            Ok(text) => return Ok(text),
+            Err(e) => eprintln!("[stt] server failed, falling back to whisper-cli: {e}"),
+        }
+    }
+    let s = state.clone();
+    let language = language.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let tmp = tempfile::Builder::new()
+            .prefix("nm-utt-")
+            .suffix(".wav")
+            .tempfile()
+            .map_err(|e| crate::error::Error::Capture(format!("tempfile: {e}")))?;
+        std::fs::write(tmp.path(), &wav)?;
+        transcribe(&s, tmp.path(), &language)
+    })
+    .await
+    .map_err(|e| crate::error::Error::Engine(format!("transcription task: {e}")))?
+}
+
+async fn transcribe_via_server(
+    wav: Vec<u8>,
+    language: &str,
+    context: &str,
+) -> crate::error::Result<String> {
+    let tail: String = {
+        let chars: Vec<char> = context.chars().collect();
+        chars[chars.len().saturating_sub(200)..].iter().collect()
+    };
+    // Names the recognizer would otherwise mangle ("Nodemind" → "not a mine").
+    let mut prompt = format!("Nodemind, EmbeddingGemma. {tail}");
+    if language == "hi" {
+        let hint = prompts::get("stt.hindi_initial_prompt");
+        prompt = format!("{hint} {prompt}");
+    }
+    let file = reqwest::multipart::Part::bytes(wav)
+        .file_name("utterance.wav")
+        .mime_str("audio/wav")
+        .map_err(crate::error::Error::Http)?;
+    let form = reqwest::multipart::Form::new()
+        .part("file", file)
+        .text("response_format", "json")
+        .text("language", "en")
+        .text("temperature", "0")
+        .text("no_timestamps", "true")
+        .text("prompt", prompt.trim().to_string());
+    let resp = server_client()
+        .post(format!(
+            "http://127.0.0.1:{}/inference",
+            crate::engine::sidecar::WHISPER_PORT
+        ))
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+    let body: serde_json::Value = resp.json().await?;
+    Ok(strip_markers(body["text"].as_str().unwrap_or("")))
+}
+
+fn server_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("reqwest client")
+    })
+}
+
+/// Encode 16 kHz mono f32 samples as a 16-bit wav, in memory.
+fn wav_bytes(samples: &[f32]) -> crate::error::Result<Vec<u8>> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 16_000,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer = hound::WavWriter::create(out_path, spec)
-        .map_err(|e| crate::error::Error::Capture(format!("cannot write wav: {e}")))?;
-    // pcm is s16le bytes; hound wants i16 samples.
-    let samples: Vec<i16> = pcm
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    // hound 3.x: the fast path is the buffered i16 writer (exactly `n` samples).
-    let mut buf = writer.get_i16_writer(samples.len() as u32);
-    for s in &samples {
-        buf.write_sample(*s);
+    let mut cursor = std::io::Cursor::new(Vec::with_capacity(samples.len() * 2 + 44));
+    {
+        let mut w = hound::WavWriter::new(&mut cursor, spec)
+            .map_err(|e| crate::error::Error::Capture(format!("wav: {e}")))?;
+        for &s in samples {
+            w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)
+                .map_err(|e| crate::error::Error::Capture(format!("wav: {e}")))?;
+        }
+        w.finalize()
+            .map_err(|e| crate::error::Error::Capture(format!("wav: {e}")))?;
     }
-    buf.flush()
-        .map_err(|e| crate::error::Error::Capture(format!("wav write: {e}")))?;
-    writer
-        .finalize()
-        .map_err(|e| crate::error::Error::Capture(format!("wav finalize: {e}")))?;
-    Ok(())
+    Ok(cursor.into_inner())
+}
+
+/// Remove whisper's non-speech annotations (`[BLANK_AUDIO]`, `(music)`, …)
+/// from a whole-utterance transcript.
+fn strip_markers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if is_non_speech_marker(&out) {
+        String::new()
+    } else {
+        out
+    }
 }
 
 /// Transcribe a wav file. Blocking — call from `spawn_blocking`.
@@ -109,11 +203,7 @@ pub fn transcribe(
     let parsed: serde_json::Value = serde_json::from_str(&json_text)
         .map_err(|e| crate::error::Error::Engine(format!("whisper JSON: {e}")))?;
 
-    let transcript = parsed["transcription"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let transcript = transcript_from_json(&parsed);
     let words = transcript.split_whitespace().count() as u64;
     eprintln!(
         "[stt] {} words in {:.1}s ({}s audio)",
@@ -122,6 +212,30 @@ pub fn transcribe(
         wav_duration_estimate(std::fs::metadata(wav_path).map(|m| m.len()).unwrap_or(0))
     );
     Ok(transcript)
+}
+
+/// Join whisper-cli's `-oj` output into one transcript.
+///
+/// `transcription` is an array of segments (`{ "text": " Hello", ... }`).
+/// Non-speech markers whisper emits for silence/noise (`[BLANK_AUDIO]`,
+/// `(music)`, …) are dropped so an empty recording yields an empty string.
+fn transcript_from_json(parsed: &serde_json::Value) -> String {
+    let segments: Vec<&str> = match &parsed["transcription"] {
+        serde_json::Value::Array(segs) => segs.iter().filter_map(|s| s["text"].as_str()).collect(),
+        serde_json::Value::String(s) => vec![s.as_str()],
+        _ => Vec::new(),
+    };
+    segments
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !is_non_speech_marker(s))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_non_speech_marker(s: &str) -> bool {
+    let bracketed = (s.starts_with('[') && s.ends_with(']')) || (s.starts_with('(') && s.ends_with(')'));
+    bracketed && !s[1..s.len() - 1].contains(['[', ']', '(', ')'])
 }
 
 fn with_ext(p: &std::path::Path, ext: &str) -> std::path::PathBuf {
@@ -138,18 +252,76 @@ fn wav_duration_estimate(bytes: u64) -> f64 {
     bytes as f64 / (16_000.0 * 2.0)
 }
 
-/// True when the CoreML encoder sits next to the model file (fast path).
-/// whisper.cpp auto-detects it; this is for status reporting only.
-pub fn coreml_enabled(state: &AppState) -> bool {
-    let Some(model) = state.resolve_model(ModelKey::Whisper) else {
-        return false;
-    };
-    let stem = model
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let dir = model.parent().unwrap_or_else(|| std::path::Path::new("."));
-    dir.join(format!("{stem}-encoder.mlmodelc"))
-        .join("model.mil")
-        .exists()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joins_segment_array() {
+        let v = serde_json::json!({ "transcription": [
+            { "text": " Remind me to call Priya." },
+            { "text": " Then finish the slides." }
+        ]});
+        assert_eq!(
+            transcript_from_json(&v),
+            "Remind me to call Priya. Then finish the slides."
+        );
+    }
+
+    #[test]
+    fn drops_non_speech_markers() {
+        let v = serde_json::json!({ "transcription": [
+            { "text": " [BLANK_AUDIO]" },
+            { "text": " (keyboard clicking)" }
+        ]});
+        assert_eq!(transcript_from_json(&v), "");
+    }
+
+    #[test]
+    fn strips_server_markers() {
+        assert_eq!(strip_markers(" [BLANK_AUDIO]"), "");
+        assert_eq!(strip_markers(" (wind blowing)"), "");
+        assert_eq!(strip_markers(" Call Priya. [MUSIC] Then  the slides."), "Call Priya. Then the slides.");
+    }
+
+    #[test]
+    fn wav_roundtrip() {
+        let wav = wav_bytes(&[0.0, 0.5, -0.5]).unwrap();
+        let r = hound::WavReader::new(std::io::Cursor::new(wav)).unwrap();
+        assert_eq!(r.spec().sample_rate, 16_000);
+        assert_eq!(r.len(), 3);
+    }
+
+    #[test]
+    fn accepts_plain_string() {
+        let v = serde_json::json!({ "transcription": " hello " });
+        assert_eq!(transcript_from_json(&v), "hello");
+    }
+
+    /// Live path against a running whisper-server on WHISPER_PORT:
+    /// `NM_WAV=/path/16k-mono.wav cargo test live_path -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn live_path_over_real_speech() {
+        let path = std::env::var("NM_WAV").expect("set NM_WAV");
+        let mut r = hound::WavReader::open(path).unwrap();
+        let samples: Vec<f32> = r.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
+        let mut seg = crate::audio::segmenter::Segmenter::new();
+        let mut utterances = Vec::new();
+        for chunk in samples.chunks(1_600) {
+            utterances.extend(seg.push(chunk));
+        }
+        utterances.extend(seg.finish());
+        let mut text = String::new();
+        for u in &utterances {
+            let t0 = std::time::Instant::now();
+            let t = transcribe_via_server(wav_bytes(u).unwrap(), "en", &text).await.unwrap();
+            println!("{:>5.1}s audio → {:.2}s: {t}", u.len() as f32 / 16_000.0, t0.elapsed().as_secs_f32());
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&t);
+        }
+        assert!(text.to_lowercase().contains("priya"));
+    }
 }

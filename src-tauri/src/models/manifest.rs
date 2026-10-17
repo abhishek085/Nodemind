@@ -9,7 +9,7 @@ use std::fmt;
 pub enum ModelKey {
     /// whisper.cpp small — speech → text (multilingual, handles Hinglish)
     Whisper,
-    /// Llama 3.2 1B Instruct (Q4_K_M) — checklist cleanup, graph annotation
+    /// Qwen3.5 0.8B (Q4_K_M) — checklist cleanup, graph annotation, minutes
     Llm,
     /// EmbeddingGemma 2 (Q8_0) — semantic similarity / vector store
     Embed,
@@ -28,7 +28,7 @@ impl ModelKey {
     pub fn filename(self) -> &'static str {
         match self {
             ModelKey::Whisper => "ggml-small.bin",
-            ModelKey::Llm => "llama-3.2-1b-instruct-q4_k_m.gguf",
+            ModelKey::Llm => "qwen3.5-0.8b-q4_k_m.gguf",
             ModelKey::Embed => "embeddinggemma-2-q8_0.gguf",
         }
     }
@@ -67,13 +67,16 @@ pub const MANIFEST: &[ModelDef] = &[
     },
     ModelDef {
         key: ModelKey::Llm,
-        label: "Llama 3.2 1B · checklist + graph",
-        filename: "llama-3.2-1b-instruct-q4_k_m.gguf",
-        url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        label: "Qwen3.5 0.8B · checklist + minutes",
+        filename: "qwen3.5-0.8b-q4_k_m.gguf",
+        // Pinned to a repo commit so the checksum below stays valid.
+        // Chosen over Llama 3.2 1B by measurement on Nodemind's own prompts:
+        // smaller (533 vs 808 MB), as fast, far fewer invented tasks.
+        url: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q4_K_M.gguf",
         sha256: Some(
-            "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+            "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517",
         ),
-        expected_bytes: 807_694_464,
+        expected_bytes: 532_517_120,
     },
     ModelDef {
         key: ModelKey::Embed,

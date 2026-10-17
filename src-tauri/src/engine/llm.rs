@@ -37,6 +37,10 @@ struct ChatRequest<'a> {
     temperature: f32,
     max_tokens: u32,
     stream: bool,
+    /// Qwen3.5 "thinks" before answering by default — slower, and the
+    /// reasoning would leak into our JSON. Every Nodemind call is extraction,
+    /// so thinking stays off.
+    chat_template_kwargs: serde_json::Value,
 }
 
 #[derive(Serialize, Clone)]
@@ -78,6 +82,7 @@ pub async fn chat(system: &str, user: &str, temperature: f32, max_tokens: u32) -
         temperature,
         max_tokens,
         stream: false,
+        chat_template_kwargs: serde_json::json!({ "enable_thinking": false }),
     };
     let resp = client()
         .post(format!("{}/v1/chat/completions", chat_url()))
@@ -91,12 +96,22 @@ pub async fn chat(system: &str, user: &str, temperature: f32, max_tokens: u32) -
         return Err(Error::Engine(format!("chat server {status}: {}", text.chars().take(200).collect::<String>())));
     }
     let parsed: ChatResponse = resp.json().await.map_err(Error::Http)?;
-    Ok(parsed
+    let text = parsed
         .choices
         .into_iter()
         .next()
         .and_then(|c| c.message.content)
-        .unwrap_or_default())
+        .unwrap_or_default();
+    Ok(strip_thinking(&text))
+}
+
+/// Drop any `<think>…</think>` block a model emits despite thinking being off.
+fn strip_thinking(text: &str) -> String {
+    match (text.find("<think>"), text.find("</think>")) {
+        (Some(a), Some(b)) if b > a => format!("{}{}", &text[..a], &text[b + "</think>".len()..]).trim().to_string(),
+        (None, Some(b)) => text[b + "</think>".len()..].trim().to_string(),
+        _ => text.to_string(),
+    }
 }
 
 // ── Embeddings ──────────────────────────────────────────────────────────────
@@ -134,6 +149,22 @@ pub async fn embed(texts: &[String]) -> Result<Vec<Vec<f32>>, Error> {
     Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
 }
 
+/// Embed statements for retrieval, with EmbeddingGemma's document prefix.
+pub async fn embed_documents(texts: &[String]) -> Result<Vec<Vec<f32>>, Error> {
+    let prefixed: Vec<String> = texts.iter().map(|t| format!("title: none | text: {t}")).collect();
+    embed(&prefixed).await
+}
+
+/// Embed a search query, with EmbeddingGemma's retrieval-query prefix.
+/// (The prefixes widened the right-vs-runner-up margin ~25% in our tests.)
+pub async fn embed_query(query: &str) -> Result<Vec<f32>, Error> {
+    embed(&[format!("task: search result | query: {query}")])
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Engine("embed server returned no vector".into()))
+}
+
 // ── High-level prompt runners ───────────────────────────────────────────────
 
 /// Extract the first balanced JSON object from a model response, tolerating
@@ -149,237 +180,95 @@ pub fn extract_json(raw: &str) -> Option<serde_json::Value> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
         return Some(v);
     }
+    // Parse the first complete value starting at the first '{' and ignore
+    // whatever follows it (commentary, a second object, stray fences).
     let start = s.find('{')?;
-    let end = rfind('}', &s[start..])? + start;
-    let candidate = &s[start..=end];
-    serde_json::from_str(candidate).ok()
+    let first = serde_json::Deserializer::from_str(&s[start..])
+        .into_iter::<serde_json::Value>()
+        .next();
+    match first {
+        Some(Ok(v)) => Some(v),
+        // Small models sometimes stop before the last closing brace(s).
+        _ => serde_json::from_str(&close_brackets(&s[start..])).ok(),
+    }
 }
 
-fn rfind(c: char, s: &str) -> Option<usize> {
-    s.char_indices()
-        .rev()
-        .find(|(_, ch)| *ch == c)
-        .map(|(i, _)| i + c.len_utf8())
-}
-
-/// Brain-dump → checklist. The flagship prompt; returns the task strings.
-pub async fn clean_checklist(rant: &str) -> Result<Vec<String>, Error> {
-    let system = prompts::get("clean_checklist.system");
-    let user = prompts::fill("clean_checklist.user", &[("text", rant)]);
-    let raw = chat(&system, &user, 0.1, 512).await?;
-    Ok(parse_tasks(&raw))
-}
-
-/// Lenient parser — mirrors the lessons from the web app:
-/// first JSON object, else line-split.
-pub fn parse_tasks(raw: &str) -> Vec<String> {
-    if let Some(obj) = extract_json(raw) {
-        if let Some(arr) = obj["tasks"].as_array() {
-            let mut out = Vec::new();
-            for t in arr {
-                if let Some(s) = t.as_str() {
-                    let s = s.trim();
-                    if !s.is_empty() {
-                        out.push(s.to_string());
-                    }
-                }
+/// Append whatever `}`/`]` an otherwise complete JSON prefix is missing
+/// (ignores brackets inside strings).
+fn close_brackets(s: &str) -> String {
+    let mut stack: Vec<char> = Vec::new();
+    let (mut in_str, mut esc) = (false, false);
+    for c in s.chars() {
+        if in_str {
+            match (esc, c) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => in_str = false,
+                _ => {}
             }
-            return out;
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => stack.push('}'),
+            '[' => stack.push(']'),
+            '}' | ']' => {
+                stack.pop();
+            }
+            _ => {}
         }
     }
-    raw.lines()
-        .map(|l| l.trim().trim_start_matches(['-', '*', '•', 'x', 'X']))
-        .map(|l| l.trim_start_matches(|c: char| c.is_ascii_digit()))
-        .map(|l| l.trim().trim_start_matches(['.', ' ']))
-        .filter(|l| l.len() >= 3)
-        .take(30)
-        .map(|s| s.to_string())
-        .collect()
+    let mut out = s.trim_end().trim_end_matches("```").trim_end().to_string();
+    while let Some(c) = stack.pop() {
+        out.push(c);
+    }
+    out
 }
 
-/// Annotation for the thought graph: summary, entities, and which previous
-/// thoughts this one relates to.
-pub async fn annotate(
-    text: &str,
-    recent_thoughts: &[(String, String)],
-) -> Result<crate::engine::pipeline::Annotation, Error> {
+/// Annotation for the thought graph: a one-line summary and the entities
+/// (topics, people, goals) the thought is about. Related thoughts are found
+/// by EmbeddingGemma 2 instead (engine::links), not guessed by the LLM.
+pub async fn annotate(text: &str) -> Result<crate::engine::pipeline::Annotation, Error> {
     use crate::engine::pipeline::Annotation;
-    let system = prompts::get("annotate.system");
-    let ctx = if recent_thoughts.is_empty() {
-        "(no earlier thoughts yet)".to_string()
-    } else {
-        recent_thoughts
-            .iter()
-            .enumerate()
-            .map(|(i, (t, s))| format!("[{i}] {t} — {s}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let user = prompts::fill(
-        "annotate.user",
-        &[("text", text), ("recent_thoughts", &ctx)],
-    );
-    let raw = chat(&system, &user, 0.2, 700).await?;
+    let raw = chat(
+        &prompts::get("annotate.system"),
+        &prompts::fill("annotate.user", &[("text", text)]),
+        0.2,
+        400,
+    )
+    .await?;
     let v = extract_json(&raw).unwrap_or(serde_json::json!({}));
-
-    fn str_arr(v: &serde_json::Value, key: &str) -> Vec<String> {
+    let list = |key: &str, kind: &str| -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
         v.get(key)
             .and_then(|x| x.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|x| x.as_str())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
+                    .map(|s| s.trim().trim_end_matches('.').to_string())
+                    .filter(|s| !s.is_empty() && !crate::engine::links::is_junk_entity(kind, s))
+                    .filter(|s| crate::engine::links::is_grounded(kind, s, text))
+                    .filter(|s| seen.insert(s.to_lowercase()))
+                    .take(5)
                     .collect()
             })
             .unwrap_or_default()
-    }
-    fn obj_arr(v: &serde_json::Value, key: &str) -> Vec<crate::engine::pipeline::TaskDraft> {
-        use crate::engine::pipeline::TaskDraft;
-        v.get(key)
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|o| {
-                        let title = o["title"].as_str().map(|s| s.trim().to_string())?;
-                        if title.is_empty() {
-                            return None;
-                        }
-                        Some(TaskDraft {
-                            title,
-                            project: o["project"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
-                            due_hint: o["due_hint"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    // "related" is a list of *indices* into the recent-thought list we passed.
-    let related: Vec<String> = v["related"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|x| {
-                    let idx = x.as_u64()? as usize;
-                    recent_thoughts.get(idx).map(|(id, _)| id.clone())
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
+    };
+    let people = list("people", "person");
+    let topics: Vec<String> = list("topics", "topic")
+        .into_iter()
+        .filter(|t| !people.iter().any(|p| p.eq_ignore_ascii_case(t)))
+        .collect();
     Ok(Annotation {
         summary: v["summary"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
-        tasks: obj_arr(&v, "tasks"),
-        topics: str_arr(&v, "topics"),
-        people: str_arr(&v, "people"),
-        goals: str_arr(&v, "goals"),
-        related,
+        topics,
+        people,
+        goals: list("goals", "goal"),
         sentiment: v["sentiment"]
             .as_str()
             .map(|s| s.to_lowercase())
             .filter(|s| ["positive", "neutral", "negative"].contains(&s.as_str()))
             .unwrap_or_else(|| "neutral".to_string()),
-    })
-}
-
-/// Lightweight fog/friction signal for the Today view.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FogSignal {
-    pub tag: String,
-    pub context: String,
-    pub intensity: f64,
-    #[serde(default)]
-    pub question: String,
-}
-
-pub async fn fog(text: &str) -> Result<Vec<FogSignal>, Error> {
-    let system = prompts::get("fog.system");
-    let user = prompts::fill("fog.user", &[("text", text)]);
-    let raw = chat(&system, &user, 0.2, 300).await?;
-    let v = extract_json(&raw).unwrap_or(serde_json::json!({}));
-    Ok(v["signals"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|o| {
-                    Some(FogSignal {
-                        tag: o["tag"].as_str()?.to_string(),
-                        context: o["context"].as_str().unwrap_or("").to_string(),
-                        intensity: o["intensity"].as_f64().unwrap_or(0.5),
-                        question: o["question"].as_str().unwrap_or("").to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
-/// Daily brief for the Today view (friction + suggestion).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DailyBrief {
-    pub friction: Option<String>,
-    pub suggestion: Option<String>,
-}
-
-/// Owned fields — the struct crosses into an async task, so it must be `Send`.
-#[derive(Debug, Clone, Serialize)]
-pub struct BriefInput {
-    pub open_tasks: usize,
-    pub open_task_list: String,
-    pub thoughts_today: usize,
-    pub events_today: usize,
-    pub scheduled_hours: f64,
-    pub focus_minutes: i64,
-    pub fog_json: String,
-}
-
-pub async fn daily_brief(input: BriefInput) -> Result<DailyBrief, Error> {
-    let system = prompts::get("daily_brief.system");
-    let user = prompts::fill(
-        "daily_brief.user",
-        &[
-            ("open_tasks", &input.open_tasks.to_string()),
-            ("open_task_list", &input.open_task_list),
-            ("thoughts_today", &input.thoughts_today.to_string()),
-            ("events_today", &input.events_today.to_string()),
-            ("scheduled_hours", &format!("{:.1}", input.scheduled_hours)),
-            ("focus_minutes", &input.focus_minutes.to_string()),
-            ("fog_json", &input.fog_json),
-        ],
-    );
-    let raw = chat(&system, &user, 0.3, 220).await?;
-    let v = extract_json(&raw).unwrap_or(serde_json::json!({}));
-    Ok(DailyBrief {
-        friction: v["friction"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
-        suggestion: v["suggestion"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
-    })
-}
-
-/// Command parser: "add a task to email Sam" → structured intent.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandIntent {
-    pub intent: String, // "create_task" | "start_focus" | "unknown"
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub minutes: Option<u32>,
-}
-
-pub async fn parse_command(text: &str) -> Result<CommandIntent, Error> {
-    let now = crate::time::now_secs().to_string();
-    let system = prompts::fill("parse_command.system", &[("now", &now)]);
-    let user = prompts::fill("parse_command.user", &[("text", text)]);
-    let raw = chat(&system, &user, 0.0, 120).await?;
-    let v = extract_json(&raw).unwrap_or(serde_json::json!({}));
-    Ok(CommandIntent {
-        intent: v["intent"].as_str().unwrap_or("unknown").to_string(),
-        title: v["title"].as_str().map(|s| s.to_string()),
-        minutes: v["minutes"].as_u64().map(|m| m as u32),
     })
 }
 
@@ -402,9 +291,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_tasks_fallback_lines() {
-        let raw = "- Call the bank\n* Renew passport\n3. Walk the dog";
-        let t = parse_tasks(raw);
-        assert_eq!(t, vec!["Call the bank", "Renew passport", "Walk the dog"]);
+    fn extracts_json_ending_the_response() {
+        // Regression: a closing brace as the very last byte used to panic.
+        let raw = "Minutes: {\"title\": \"Beta\", \"decisions\": [\"Ship Wednesday\"]}";
+        assert_eq!(extract_json(raw).unwrap()["title"].as_str(), Some("Beta"));
     }
+
+    #[test]
+    fn strips_thinking_blocks() {
+        assert_eq!(strip_thinking("<think>hmm</think>\n{\"tasks\": []}"), "{\"tasks\": []}");
+        assert_eq!(strip_thinking("reasoning…</think>{}"), "{}");
+        assert_eq!(strip_thinking("{\"a\": 1}"), "{\"a\": 1}");
+    }
+
+    #[test]
+    fn repairs_missing_closing_brace() {
+        let raw = r#"{"signals": [{"tag": "overthinking", "context": "launch {date}", "question": "Why?"}]"#;
+        let v = extract_json(raw).unwrap();
+        assert_eq!(v["signals"][0]["tag"].as_str(), Some("overthinking"));
+        assert_eq!(v["signals"][0]["context"].as_str(), Some("launch {date}"));
+    }
+
+    #[test]
+    fn extracts_first_of_two_objects() {
+        let raw = "{\"a\": 1}\n{\"b\": 2}";
+        assert_eq!(extract_json(raw).unwrap()["a"].as_i64(), Some(1));
+    }
+
 }
