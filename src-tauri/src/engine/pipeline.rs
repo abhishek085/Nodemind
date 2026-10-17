@@ -162,19 +162,19 @@ async fn process(state: Arc<AppState>, mode: CaptureMode, said_at: String, mut r
                 Minutes { title: "Meeting".into(), ..Minutes::default() }
             });
             let mine: String = transcript.lines().filter_map(|l| l.strip_prefix("You: ")).collect::<Vec<_>>().join(" ");
-            // Action items come from the minutes; the user's own lines add ideas,
-            // learnings and questions; decisions come from the minutes.
-            let mut sorted: Vec<sort::Item> = minutes
-                .action_items
-                .iter()
-                .filter(|a| a.is_mine())
-                .map(|a| sort::Item {
-                    kind: Kind::Task,
-                    text: if a.due.is_empty() { a.task.clone() } else { format!("{} ({})", a.task, a.due) },
-                })
-                .chain(minutes.decisions.iter().map(|d| sort::Item { kind: Kind::Decision, text: d.clone() }))
-                .collect();
-            sorted.extend(sort::sort(&mine).into_iter().filter(|i| !matches!(i.kind, Kind::Task | Kind::Decision)));
+            // The 0.8B model files commitments under "decisions" and misses
+            // casual ones ("I'll book the demo room too"), so rules decide:
+            //  - decisions: agreements anywhere in the call;
+            //  - the user's own lines: tasks, ideas, learnings, questions;
+            //  - plus the model's action items for "You" (duplicates merge later).
+            let mut sorted: Vec<sort::Item> = sort::sort(&mine).into_iter().filter(|i| i.kind != Kind::Decision).collect();
+            sorted.extend(sort::sort(&sort::strip_speakers(&transcript)).into_iter().filter(|i| i.kind == Kind::Decision));
+            sorted.extend(minutes.action_items.iter().filter(|a| a.is_mine()).map(|a| sort::Item {
+                kind: Kind::Task,
+                text: if a.due.is_empty() { a.task.clone() } else { format!("{} ({})", a.task, a.due) },
+            }));
+            let mut minutes = minutes;
+            minutes.decisions = sorted.iter().filter(|i| i.kind == Kind::Decision).map(|i| i.text.clone()).collect();
             (sorted, Some(minutes), mine)
         }
     };
@@ -194,12 +194,13 @@ async fn process(state: Arc<AppState>, mode: CaptureMode, said_at: String, mut r
     // 3) What it's about: annotate the kept statements (clean, short), or the
     // minutes / own words when nothing was itemised.
     let kept_text = sorted.iter().map(|i| i.text.as_str()).collect::<Vec<_>>().join(". ");
-    let about = match &minutes {
-        Some(m) => format!("{}. {}. {kept_text}", m.title, m.summary),
-        None if kept_text.is_empty() => own_words.clone(),
-        None => kept_text.clone(),
+    // Only things that were kept get topics and people — never the
+    // transcript of small talk or nonsense.
+    let annotation = match &minutes {
+        Some(m) => crate::engine::llm::annotate(&format!("{}. {}. {kept_text}", m.title, m.summary)).await.unwrap_or_default(),
+        None if kept_text.is_empty() => Annotation::default(),
+        None => crate::engine::llm::annotate(&kept_text).await.unwrap_or_default(),
     };
-    let annotation = crate::engine::llm::annotate(&about).await.unwrap_or_default();
     let summary = minutes
         .as_ref()
         .map(|m| m.summary.clone())

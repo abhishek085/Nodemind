@@ -54,7 +54,8 @@ async fn transcribe_via_server(
         let chars: Vec<char> = context.chars().collect();
         chars[chars.len().saturating_sub(200)..].iter().collect()
     };
-    let mut prompt = tail;
+    // Names the recognizer would otherwise mangle ("Nodemind" → "not a mine").
+    let mut prompt = format!("Nodemind, EmbeddingGemma. {tail}");
     if language == "hi" {
         let hint = prompts::get("stt.hindi_initial_prompt");
         prompt = format!("{hint} {prompt}");

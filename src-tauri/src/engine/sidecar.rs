@@ -9,7 +9,7 @@
 //! `whisper-cli` remains as a fallback when the server binary is absent.
 //! Sidecars are killed automatically on app exit (see `engine::shutdown`).
 
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +39,24 @@ fn sidecar_bin(state: &AppState, name: &str) -> Option<std::path::PathBuf> {
     } else {
         None
     }
+}
+
+/// Make `child` die when this app does, however the app ends (quit, crash,
+/// SIGTERM, `kill -9`): a tiny detached shell polls our pid and kills the
+/// child once we're gone. Without it, killed apps left ~1.5 GB of servers
+/// running with no owner.
+fn bind_lifetime(child: &std::process::Child) {
+    let script = format!(
+        "while kill -0 {parent} 2>/dev/null; do sleep 2; done; kill {child} 2>/dev/null",
+        parent = std::process::id(),
+        child = child.id()
+    );
+    let _ = Command::new("/bin/sh")
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn is_port_alive(port: u16) -> bool {
@@ -105,6 +123,7 @@ pub async fn ensure_embed_server(state: &Arc<AppState>) -> bool {
         }
     };
 
+    bind_lifetime(&child);
     state.embed_server.lock().unwrap().replace(child);
     let healthy = wait_healthy(EMBED_PORT, Duration::from_secs(180)).await;
     state.embed_running.store(healthy, std::sync::atomic::Ordering::SeqCst);
@@ -152,6 +171,7 @@ pub async fn ensure_chat_server(state: &Arc<AppState>) -> bool {
         }
     };
 
+    bind_lifetime(&child);
     state.chat_server.lock().unwrap().replace(child);
     let healthy = wait_healthy(CHAT_PORT, Duration::from_secs(240)).await;
     state.chat_running.store(healthy, std::sync::atomic::Ordering::SeqCst);
@@ -196,6 +216,7 @@ pub async fn ensure_whisper_server(state: &Arc<AppState>) -> bool {
             return false;
         }
     };
+    bind_lifetime(&child);
     state.whisper_server.lock().unwrap().replace(child);
     let healthy = wait_healthy(WHISPER_PORT, Duration::from_secs(60)).await;
     state.whisper_running.store(healthy, std::sync::atomic::Ordering::SeqCst);

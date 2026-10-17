@@ -34,8 +34,8 @@ const CUES: &[(&str, &[&str])] = &[
     ]),
     ("unclarity", &[
         "at some point", "somehow", "something about", "do something", "look into", "some stuff", "stuff like that",
-        "i guess", "kind of", "sort of", "probably should", "maybe i should", "figure it out", "figure out what",
-        "not sure what", "whatever", "things like that",
+        "probably should", "maybe i should", "figure it out", "figure out what",
+        "not sure what", 
     ]),
     ("abstraction", &[
         "vision", "big picture", "in general", "humanity", "change the world", "someday", "the future of",
@@ -48,10 +48,12 @@ const CUES: &[(&str, &[&str])] = &[
     ]),
 ];
 
+/// Tags with at least two distinct cues in the words. One stray phrase
+/// ("I still don't know whether…") is a question, not fog.
 fn cued_tags(text: &str) -> Vec<&'static str> {
     let lower = text.to_lowercase();
     CUES.iter()
-        .filter(|(_, cues)| cues.iter().any(|c| lower.contains(c)))
+        .filter(|(_, cues)| cues.iter().filter(|c| lower.contains(*c)).count() >= 2)
         .map(|(tag, _)| *tag)
         .collect()
 }
@@ -153,6 +155,9 @@ mod tests {
     fn cues_pick_the_right_tags() {
         assert_eq!(cued_tags("I keep going back and forth on the launch, what if it breaks"), vec!["overthinking"]);
         assert_eq!(cued_tags("I should do something about marketing at some point"), vec!["unclarity"]);
+        // one stray phrase is not fog
+        assert!(cued_tags("We decided on nine dollars. I still don't know whether to offer a free tier.").is_empty());
+        assert!(cued_tags("The weather is purple. Anyway whatever, the table sings.").is_empty());
         assert_eq!(cued_tags("everything is piling up and I don't know where to start"), vec!["overwhelmed"]);
     }
 

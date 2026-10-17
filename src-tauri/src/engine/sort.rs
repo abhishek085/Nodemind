@@ -59,6 +59,7 @@ struct Rules {
     unsure: Regex,
     learning_lead: Regex,
     words: Regex,
+    small_talk: Regex,
 }
 
 fn rules() -> &'static Rules {
@@ -67,7 +68,7 @@ fn rules() -> &'static Rules {
         let re = |s: &str| Regex::new(s).expect("valid regex");
         Rules {
             cues: vec![
-                (Kind::Decision, re(r"\b(we|i) decided\b|\bdecided to\b|\b(we're|we are|i'm|i am|we'll) going with\b|\bwe agreed\b|\bagreed (to|on)\b|\bsettled on\b|\bwe'll go with\b")),
+                (Kind::Decision, re(r"\b(we|i) decided\b|\bdecided to\b|\b(we're|we are|so we're|so we are) agreed\b|\b(we're|we are|i'm|i am|we'll) going with\b|\bwe agreed\b|\bagreed (to|on)\b|\bsettled on\b|\bwe'll go with\b")),
                 (Kind::Task, re(&format!(
                     r"\b(i|we) (still )?(really )?(need to|have to|got to|gotta|should|must|will|plan to|want to)\b|\bi'll\b|\bi'm going to\b|\bi am going to\b|\blet me\b|\bremind me\b|\bdon't forget\b|\bremember to\b|\bto-?do\b|^({VERBS})\b|\bneeds? (to be \w+|\w+ing)\b"
                 ))),
@@ -83,6 +84,7 @@ fn rules() -> &'static Rules {
             unsure: re(r"^(?:i (?:still )?(?:don't|do not) know|i'm not sure|i am not sure|not sure|i keep going back and forth on|i'm wondering|i wonder)\s+whether to\s+(.+?)[.?]?$"),
             learning_lead: re(r"(?i)^(?:.*?\b(?:realized|learned|figured out) (?:that )?|(?:now )?i (?:finally )?get it,?\s*|turns out,?\s*(?:that )?)"),
             words: re(r"[a-z0-9']+"),
+            small_talk: re(r"\b(testing|test test|one two three|is this working|can you hear|hello hello|mic check|hey guys|check one)\b"),
         }
     })
 }
@@ -134,6 +136,9 @@ fn tidy(r: &Rules, clause: &str) -> String {
 }
 
 fn classify(r: &Rules, lower: &str) -> Option<Kind> {
+    if r.small_talk.is_match(lower) {
+        return None; // greetings and mic tests are never items
+    }
     let kind = r.cues.iter().find(|(_, re)| re.is_match(lower)).map(|(k, _)| *k)?;
     if kind == Kind::Task && r.not_imperative.is_match(lower) {
         return None;
@@ -182,7 +187,13 @@ pub fn sort(text: &str) -> Vec<Item> {
                 let insight = r.learning_lead.replace(&clean, "").to_string();
                 if insight.split_whitespace().count() >= 4 { insight } else { clean.clone() }
             }
-            Kind::Idea => clean.trim_end_matches('?').to_string(),
+            Kind::Idea => {
+                // "What if it does" is a worry fragment, not an idea.
+                if clean.split_whitespace().count() < 5 {
+                    continue;
+                }
+                clean.trim_end_matches('?').to_string()
+            }
             Kind::Decision => clean.clone(),
         };
         let text = capitalize(text.trim());
@@ -195,6 +206,14 @@ pub fn sort(text: &str) -> Vec<Item> {
         }
     }
     items
+}
+
+/// Strip "You:" / "Them:" speaker labels (meeting transcripts).
+pub fn strip_speakers(text: &str) -> String {
+    text.lines()
+        .map(|l| l.strip_prefix("You: ").or_else(|| l.strip_prefix("Them: ")).unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -216,6 +235,20 @@ mod tests {
         ] {
             assert!(sort(t).is_empty(), "{t} → {:?}", got(t));
         }
+    }
+
+    #[test]
+    fn mic_tests_and_worry_fragments_are_not_items() {
+        assert!(sort("Hello hello, testing, testing, one two three, okay cool, is this working? Yeah. Hey guys, so yeah, that is that.").is_empty());
+        assert!(sort("And then again maybe it does not matter, but what if it does?").is_empty());
+    }
+
+    #[test]
+    fn meeting_agreement_is_a_decision() {
+        let t = strip_speakers("You: I'll book the demo room too. So we're agreed, beta ships next Wednesday.\nThem: Agreed.");
+        let g = got(&t);
+        assert!(g.contains(&(Kind::Task, "Book the demo room".into())), "{g:?}");
+        assert!(g.iter().any(|(k, x)| *k == Kind::Decision && x.contains("beta ships next Wednesday")), "{g:?}");
     }
 
     #[test]

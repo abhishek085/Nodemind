@@ -254,10 +254,15 @@ pub async fn annotate(text: &str) -> Result<crate::engine::pipeline::Annotation,
             })
             .unwrap_or_default()
     };
+    let people = list("people", "person");
+    let topics: Vec<String> = list("topics", "topic")
+        .into_iter()
+        .filter(|t| !people.iter().any(|p| p.eq_ignore_ascii_case(t)))
+        .collect();
     Ok(Annotation {
         summary: v["summary"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
-        topics: list("topics", "topic"),
-        people: list("people", "person"),
+        topics,
+        people,
         goals: list("goals", "goal"),
         sentiment: v["sentiment"]
             .as_str()

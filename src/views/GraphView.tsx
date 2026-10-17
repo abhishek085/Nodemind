@@ -92,7 +92,7 @@ interface Visible {
   adj: Map<string, Set<string>>;
 }
 
-function visibleGraph(data: GraphData, shown: Set<NodeType>, range: Range): Visible {
+export function visibleGraph(data: GraphData, shown: Set<NodeType>, range: Range): Visible {
   const cutoff = range === "all" ? 0 : Date.now() - (range === "7d" ? 7 : 30) * 86_400_000;
   const byId = new Map(data.nodes.map((n) => [n.id, n]));
   const inRange = (n: NodeView) => !cutoff || new Date(n.lastSeen ?? 0).getTime() >= cutoff;
@@ -167,7 +167,7 @@ function radius(n: NodeView, degree: number): number {
 
 /** Node centres, seeded from the previous layout so filtering doesn't
  *  reshuffle what you were looking at. */
-function layout(vis: Visible, prev: Map<string, { x: number; y: number }>): Map<string, { x: number; y: number }> {
+export function layout(vis: Visible, prev: Map<string, { x: number; y: number }>): Map<string, { x: number; y: number }> {
   const nodes: SimNode[] = vis.nodes.map((n, i) => {
     const p = prev.get(n.id);
     const a = (i / Math.max(1, vis.nodes.length)) * Math.PI * 2;
@@ -360,6 +360,10 @@ function MindMap({ refreshKey, focusId = null }: Props) {
         id: n.id,
         type: isItem(n.nodeType) ? "item" : "entity",
         position: pos.get(n.id) ?? { x: 0, y: 0 },
+        // Known sizes let edges draw (and the view fit) on the first frame,
+        // before React Flow has measured anything.
+        initialWidth: isItem(n.nodeType) ? 192 : Math.max(70, 28 + n.label.length * 7.5),
+        initialHeight: isItem(n.nodeType) ? 74 : 34,
         data: { node: n, degree: vis?.adj.get(n.id)?.size ?? 0, dim: !!near && !near.has(n.id), focus: n.id === selected },
       })),
     [vis, pos, near, selected],

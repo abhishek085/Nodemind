@@ -23,6 +23,7 @@ pub fn delete_thought(state: State<'_, Arc<AppState>>, id: String) -> Result<()>
     let items: Vec<String> = db::items_for_thought(&conn, &id)?.into_iter().map(|i| i.id).collect();
     graph::unrecord_items(&conn, &items)?;
     db::delete_thought(&conn, &id)?;
+    let _ = crate::engine::links::prune_junk(&conn); // topics only this recording mentioned
     state.emit("tasks-updated", &serde_json::json!({}));
     Ok(())
 }

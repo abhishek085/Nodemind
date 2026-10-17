@@ -56,7 +56,8 @@
       "binaries/nodemind-helper"
     ],
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "signingIdentity": "-"
     },
     "category": "Productivity",
     "longDescription": "A voice-first personal assistant that runs 100% on your Mac. Talk out your messy thoughts from the menu bar and Nodemind turns them into clean checklists, a live thought graph, and a clear view of your day."

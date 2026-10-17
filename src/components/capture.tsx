@@ -314,6 +314,9 @@ function NoteBody({ result, onChange, compact }: BodyProps) {
   return (
     <div className="space-y-4 text-left">
       {result.tasks.length > 0 && <AddedTasks result={result} onChange={onChange} heading="Added to Today" />}
+      {result.tasks.length === 0 && result.items.length === 0 && result.fog.length === 0 && (
+        <p className="text-xs text-ink-3">Already on your list — nothing new to add.</p>
+      )}
       {result.items.length > 0 && <ItemGroups items={result.items} />}
       <FogCard signals={result.fog ?? []} />
       {about.length > 0 && (

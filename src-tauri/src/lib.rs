@@ -15,6 +15,8 @@ mod error;
 mod hotkey;
 mod models;
 mod prompts;
+#[cfg(debug_assertions)]
+mod selftest;
 mod state;
 mod store;
 mod time;
@@ -50,6 +52,22 @@ pub fn run() {
             if !models::models_ready(&state) {
                 tray::show_main(app.handle(), None);
             }
+
+            // SIGTERM / Ctrl-C: shut the servers down and exit cleanly.
+            let for_signal = state.clone();
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(t) => t,
+                    Err(_) => return,
+                };
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+                engine::shutdown(&for_signal);
+                handle.exit(0);
+            });
 
             // Boot (or start first-launch download) in the background.
             models::begin_setup(state);

@@ -73,6 +73,8 @@ pub fn boot(state: Arc<AppState>) {
             state.model_error.lock().unwrap().take();
             eprintln!("[engine] ✓ ready ({})", crate::models::host_arch());
             search::backfill_in_background(state.clone());
+            #[cfg(debug_assertions)]
+            crate::selftest::run_if_requested(state.clone());
             pipeline::reprocess_old_in_background(state.clone());
             tasks::dedupe_in_background(state.clone());
             links::refresh_in_background(state.clone());
